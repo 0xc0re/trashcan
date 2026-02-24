@@ -1439,7 +1439,17 @@ main() {
     ok_msg "Cluckers Central already installed — skipping."
   else
     info_msg "Running installer (this may take a minute)..."
-    wine "${INSTALLER_PATH}" /S \
+    # /VERYSILENT    — Inno Setup silent mode (no GUI, no progress window).
+    # /SUPPRESSMSGBOXES — suppress all message boxes (errors go to exit code).
+    # /NORESTART     — do not reboot after install (meaningless under Wine but
+    #                  prevents any reboot prompt that may appear).
+    # /DIR=...       — install to a fixed location inside the Wine prefix so
+    #                  the launcher script can find cluckers-central.exe reliably.
+    # Note: this is an Inno Setup installer, not NSIS. Inno Setup uses
+    # /VERYSILENT, not /S.
+    wine "${INSTALLER_PATH}" \
+      /VERYSILENT /SUPPRESSMSGBOXES /NORESTART \
+      "/DIR=C:\\Program Files\\Cluckers Central" \
       || error_exit "Installer failed. Run with --verbose to see Wine output."
     ok_msg "Cluckers Central installed."
   fi
