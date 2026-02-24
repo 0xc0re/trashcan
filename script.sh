@@ -10922,7 +10922,7 @@ $(if [[ "${real_wine_path}" == *"GE-Proton"* ]] || [[ "${real_wine_path}" == *"p
 fi)
 
 GAME_DIR="${GAME_DIR}"
-
+GAME_EXE_REL="${GAME_EXE_REL}"
 TOOLS_DIR="${TOOLS_DIR}"
 NO_GAMESCOPE="${no_gamescope}"
 GS_ARGS="${final_gamescope_opts}"
