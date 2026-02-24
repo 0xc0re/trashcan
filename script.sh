@@ -1352,22 +1352,21 @@ main() {
   # --------------------------------------------------------------------------
   # Step 4 — Windows runtime libraries
   #
-  # Installs the exact redistributables required by Realm Royale, matching the
-  # Steam depot configuration:
-  #   Depot 228983 — VC 2010 Redist  (vcrun2010)
-  #   Depot 228984 — VC 2012 Redist  (vcrun2012)
-  #   Depot 228988 — VC 2019 Redist  (vcrun2019)
-  #   Depot 228990 — DirectX Jun 2010 Redist (directx9)
+  # vcrun2022 is a strict superset of all prior VC++ redistributables —
+  # it satisfies Depots 228983 (VC2010), 228984 (VC2012), and 228988
+  # (VC2019) in one install without conflict warnings from winetricks.
   #
-  # DXVK is NOT installed — the game uses DirectX 11 natively and does not
-  # need Vulkan translation. WINEDLLOVERRIDES=dxgi=n is not set either.
+  # d3dx9 installs the individual DirectX 9 DLLs (d3dx9_24 through
+  # d3dx9_43) that correspond to the DirectX Jun 2010 Redistributable
+  # (Depot 228990). The legacy 'directx9' winetricks verb is deprecated
+  # in current winetricks versions and issues a warning.
+  #
+  # DXVK is NOT installed — the game renders with DirectX 11 natively.
   # --------------------------------------------------------------------------
   step_msg "Step 4 — Installing Windows runtime libraries..."
 
-  install_winetricks_pkg "vcrun2010" "Visual C++ 2010 Redistributable"
-  install_winetricks_pkg "vcrun2012" "Visual C++ 2012 Redistributable"
-  install_winetricks_pkg "vcrun2019" "Visual C++ 2019 Redistributable"
-  install_winetricks_pkg "directx9"  "DirectX Jun 2010 Redistributable"
+  install_winetricks_pkg "vcrun2022" "Visual C++ 2010-2022 Redistributable"
+  install_winetricks_pkg "d3dx9"     "DirectX 9 helper DLLs (Jun 2010)"
 
   # --------------------------------------------------------------------------
   # Step 5 — Download and verify game files
@@ -10881,40 +10880,50 @@ XDLL_B64_EOF
   # --------------------------------------------------------------------------
   step_msg "Step 8 — Creating launcher script..."
 
-  # Mirrors FindWine()+FindProtonGE() in cluckers/internal/wine/detect.go:
-  # Search Proton-GE dirs newest-first, then fall back to system wine.
-  # Proton-GE search dirs (same order as detect.go):
-  #   ~/.steam/steam/compatibilitytools.d/
-  #   ~/.local/share/Steam/compatibilitytools.d/
-  #   /usr/share/steam/compatibilitytools.d/
+# Mirrors FindWine() in cluckers/internal/wine/detect.go.
+  # Search all Proton installations newest-first, then fall back to system wine.
+  # Looks in both compatibilitytools.d (custom Proton) and
+  # steamapps/common (official Proton releases), matching detect.go exactly.
   local real_wine_path=""
-  local _proton_dirs=(
+  local _is_proton="false"
+  local _proton_search_dirs=(
     "${HOME}/.steam/steam/compatibilitytools.d"
     "${HOME}/.local/share/Steam/compatibilitytools.d"
-    "/usr/share/steam/compatibilitytools.d"
+    "${HOME}/.steam/steam/steamapps/common"
+    "${HOME}/.local/share/Steam/steamapps/common"
   )
-  local _proton_dir _candidate
-  for _proton_dir in "${_proton_dirs[@]}"; do
-    if [[ ! -d "${_proton_dir}" ]]; then continue; fi
-    # Find all GE-Proton* wine binaries sorted newest first (by dir mtime).
-    while IFS= read -r _candidate; do
-      if [[ -x "${_candidate}" ]]; then
-        real_wine_path="${_candidate}"
-        break 2
-      fi
-    done < <(
-      find "${_proton_dir}" -maxdepth 2 \
-        -path "*/GE-Proton*/bin/wine" -o \
-        -path "*/proton-ge*/bin/wine" 2>/dev/null \
-        | sort -t/ -k7 -Vr
+  local _pdir _candidate
+  for _pdir in "${_proton_search_dirs[@]}"; do
+    [[ -d "${_pdir}" ]] || continue
+    # Pick the most-recently-modified Proton wine binary (any Proton variant).
+    _candidate=$(
+      find "${_pdir}" -maxdepth 3 -name "wine" \
+        -path "*/bin/wine" 2>/dev/null \
+        | while IFS= read -r _w; do
+            printf '%s %s\n' "$(stat -c %Y "${_w}" 2>/dev/null || echo 0)" "${_w}"
+          done \
+        | sort -rn | awk 'NR==1 {print $2}'
     )
+    if [[ -x "${_candidate}" ]]; then
+      real_wine_path="${_candidate}"
+      _is_proton="true"
+      break
+    fi
   done
-  # Fall back to system wine if no Proton-GE found.
+  # Fall back to system wine if no Proton installation was found.
   if [[ -z "${real_wine_path}" ]]; then
     real_wine_path=$(command -v wine 2>/dev/null) \
-      || error_exit "No Wine or Proton-GE found. Install wine or Proton-GE."
+      || error_exit "No Wine or Proton found. Install wine or Steam + Proton."
   fi
-  ok_msg "Wine binary: ${real_wine_path}"
+
+  if [[ "${_is_proton}" == "true" ]]; then
+    ok_msg "Wine binary (Proton): ${real_wine_path}"
+    ok_msg "WINEFSYNC=1 will be set in the launcher."
+  else
+    ok_msg "Wine binary (system): ${real_wine_path}"
+    info_msg "No Proton installation found — using system Wine."
+    info_msg "For best performance, install a Proton version via Steam or ProtonUp-Qt."
+  fi
 
   mkdir -p "$(dirname "${LAUNCHER_SCRIPT}")"
 
@@ -10934,11 +10943,12 @@ export WINEDEBUG="-all"
 # Source: cluckers/internal/wine/detect.go (FindWine)
 WINE="${real_wine_path}"
 
-# WINEFSYNC=1: enable futex-based sync in Proton-GE for lower CPU usage.
-# Only set when using Proton-GE — system Wine ignores it.
+# WINEFSYNC=1: futex-based sync — supported by all Proton variants and
+# reduces CPU overhead significantly. Only baked in when a Proton wine was
+# detected at setup time; system Wine does not support this variable.
 # Source: cluckers/internal/launch/process_linux.go (wine.IsProtonGE check)
-$(if [[ "${real_wine_path}" == *"GE-Proton"* ]] || [[ "${real_wine_path}" == *"proton-ge"* ]]; then
-  printf 'export WINEFSYNC=1\n'
+$(if [[ "${_is_proton}" == "true" ]]; then
+  printf '# WINEFSYNC=1: futex sync — supported by all Proton variants.\nexport WINEFSYNC=1\n'
 fi)
 
 GAME_DIR="${GAME_DIR}"
