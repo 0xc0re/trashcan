@@ -10943,7 +10943,7 @@ EOF
 # cluckers/internal/auth/login.go. No Windows launcher or proxy needed.
 # ---------------------------------------------------------------------------
 _auth_result=$(python3 - "${CREDS_FILE}" "${GATEWAY_URL}" << 'AUTHEOF'
-import base64, getpass, json, os, sys, urllib.request, urllib.error
+import base64, json, os, sys, urllib.request, urllib.error
 
 creds_file = sys.argv[1]
 gateway    = sys.argv[2].rstrip("/")
@@ -10976,9 +10976,35 @@ if os.path.exists(creds_file):
         pass
 
 if not username or not password:
-    print("[cluckers] Enter your Project Crown credentials.", file=sys.stderr)
-    username = input("Username: ")
-    password = getpass.getpass("Password: ")
+    # stdin is consumed by the heredoc, so read credentials directly from
+    # the terminal via /dev/tty.
+    try:
+        tty = open("/dev/tty", "r+")
+    except OSError as e:
+        print(f"ERROR: Cannot open /dev/tty for credential input: {e}", file=sys.stderr)
+        sys.exit(1)
+    print("[cluckers] Enter your Project Crown credentials.", file=tty, flush=True)
+    print("Username: ", end="", file=tty, flush=True)
+    username = tty.readline().rstrip("\n")
+    # getpass reads from /dev/tty by default — pass it explicitly to be safe.
+    import termios, tty as ttymod
+    print("Password: ", end="", file=tty, flush=True)
+    old = termios.tcgetattr(tty)
+    try:
+        ttymod.setraw(tty)
+        password = ""
+        while True:
+            ch = tty.read(1)
+            if ch in ("\n", "\r"):
+                break
+            if ch == "\x7f":  # backspace
+                password = password[:-1]
+            else:
+                password += ch
+    finally:
+        termios.tcsetattr(tty, termios.TCSADRAIN, old)
+        print("", file=tty)
+        tty.close()
     os.makedirs(os.path.dirname(creds_file), exist_ok=True)
     with open(creds_file, "w") as f:
         f.write(f"{username}:{password}")
