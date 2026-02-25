@@ -10962,6 +10962,11 @@ export WINEARCH="win64"
 # Suppress noisy Wine debug output. Set to "" to see full Wine diagnostics.
 export WINEDEBUG="-all"
 
+# DXVK requires WINEDLLOVERRIDES to prefer native (n) over built-in (b) DLLs.
+# Without this, Wine loads its own built-in d3d11/dxgi and ignores DXVK.
+# Source: cluckers/internal/launch/process_linux.go + DXVK documentation.
+export WINEDLLOVERRIDES="d3d9,d3d10core,d3d10,d3d10_1,d3d11,dxgi=n,b"
+
 # Wine binary path — baked in at setup time by cluckers-setup.sh.
 # Source: cluckers/internal/wine/detect.go (FindWine)
 WINE="${real_wine_path}"
