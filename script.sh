@@ -12,15 +12,16 @@
 #    ./cluckers-setup.sh                 # interactive install
 #    ./cluckers-setup.sh --auto          # skip all prompts, use defaults
 #    ./cluckers-setup.sh --verbose       # show full Wine debug output
-#    ./cluckers-setup.sh --no-gamescope  # skip Gamescope compositor  (-g)
+#    ./cluckers-setup.sh --gamescope     # enable Gamescope compositor (-g)
 #    ./cluckers-setup.sh --steam-deck    # apply game patches (Deck)    (-d)
 #    ./cluckers-setup.sh --controller    # enable controller support   (-c)
 #    ./cluckers-setup.sh --update        # check for game update       (-U)
 #    ./cluckers-setup.sh --uninstall     # remove everything           (-u)
+#    ./cluckers-setup.sh --help          # show this help message      (-h)
 #
 #  SHORT FLAGS
-#    -a  auto      -v  verbose      -g  no-gamescope      -d  steam-deck
-#    -c  controller -U  update    -u  uninstall
+#    -a  auto      -v  verbose      -g  gamescope      -d  steam-deck
+#    -c  controller -U  update    -u  uninstall      -h  help
 #
 #  UPDATE FLAG
 #    --update / -U checks the update server for a newer game version. Update
@@ -53,7 +54,7 @@
 #      • RealmSystemSettings.ini  — forced fullscreen at 1280×800
 #      • controller_neptune_config.vdf — deploys the custom Deck button layout
 #        to your Steam controller config directory (preserves any existing one)
-#      • Implies --no-gamescope (SteamOS manages its own compositor)
+#      • Gamescope is not used (SteamOS manages its own compositor)
 #
 #  PIN A SPECIFIC GAME VERSION
 #    GAME_VERSION=0.36.9999.0 ./cluckers-setup.sh
@@ -108,7 +109,7 @@ GAME_VERSION="${GAME_VERSION:-auto}"
 #
 # Gamescope is a Valve compositor that keeps the mouse cursor locked inside the
 # game window natively on Wayland (GNOME, KDE, COSMIC). If
-# you do not need it, pass --no-gamescope / -g when running this script.
+# you want to use it, pass --gamescope / -g when running this script.
 #
 # Common tweaks:
 #   -W <width> -H <height>   — output resolution (default: 1920×1080)
@@ -215,6 +216,12 @@ warn_msg() { printf "  %b[WARN]%b  %s\n" "${YELLOW}" "${NC}" "$1"; }
 error_exit() {
   printf "\n%b[ERROR]%b %s\n\n" "${RED}" "${NC}" "$1" >&2
   exit 1
+}
+
+# Prints the script usage documentation.
+print_help() {
+  # Extract the header comment block (lines 2-100) and remove leading '# '
+  sed -n '2,100p' "$0" | sed 's/^# \?//'
 }
 
 # Returns 0 if the named command exists on PATH.
@@ -1285,7 +1292,7 @@ find_wine() {
 main() {
   local verbose="false"
   local auto_mode="false"
-  local no_gamescope="false"
+  local use_gamescope="false"
   local steam_deck="false"
   local controller_mode="false"
   local resolved_version="${GAME_VERSION}"
@@ -1311,9 +1318,10 @@ main() {
       --update|-U)       do_update="true" ;;
       --verbose|-v)      verbose="true" ;;
       --auto|-a)         auto_mode="true" ;;
-      --no-gamescope|-g) no_gamescope="true" ;;
-      --steam-deck|-d)   steam_deck="true"; no_gamescope="true"; controller_mode="true" ;;
+      --gamescope|-g)    use_gamescope="true" ;;
+      --steam-deck|-d)   steam_deck="true"; use_gamescope="false"; controller_mode="true" ;;
       --controller|-c)   controller_mode="true" ;;
+      --help|-h)         print_help; exit 0 ;;
       *) ;;
     esac
   done
@@ -11366,6 +11374,10 @@ XDLL_B64_EOF
     fi
   fi
 
+  if [[ "${use_gamescope}" == "true" ]]; then
+    ok_msg "Gamescope compositor will be used in the launcher."
+  fi
+
   mkdir -p "$(dirname "${LAUNCHER_SCRIPT}")"
 
   # Part 1: setup-time values baked in as plain strings.
@@ -11410,7 +11422,7 @@ fi)
 GAME_DIR="${GAME_DIR}"
 GAME_EXE_REL="${GAME_EXE_REL}"
 TOOLS_DIR="${TOOLS_DIR}"
-NO_GAMESCOPE="${no_gamescope}"
+USE_GAMESCOPE="${use_gamescope}"
 GS_ARGS="${GAMESCOPE_ARGS}"
 GATEWAY_URL="https://gateway-dev.project-crown.com"
 HOST_X="157.90.131.105"
@@ -11634,13 +11646,7 @@ trap _cleanup EXIT INT TERM HUP
 if [[ -s "${_bootstrap_tmp}" ]]; then
   # Launch via shm_launcher.exe: writes bootstrap blob to shared memory then
   # exec's the game. Source: internal/launch/process_linux.go.
-  if [[ "${NO_GAMESCOPE}" == "true" ]]; then
-    "${WINE}" "${TOOLS_DIR}/shm_launcher.exe" \
-      "${_bootstrap_wine}" "${_shm_name}" "${_game_exe_wine}" \
-      "${_game_args[@]}" &
-    _GS_PID=$!
-    wait "${_GS_PID}"
-  else
+  if [[ "${USE_GAMESCOPE}" == "true" ]]; then
     # shellcheck disable=SC2086
     ${GS_ARGS} -- \
       "${WINE}" "${TOOLS_DIR}/shm_launcher.exe" \
@@ -11648,17 +11654,23 @@ if [[ -s "${_bootstrap_tmp}" ]]; then
         "${_game_args[@]}" &
     _GS_PID=$!
     wait "${_GS_PID}"
+  else
+    "${WINE}" "${TOOLS_DIR}/shm_launcher.exe" \
+      "${_bootstrap_wine}" "${_shm_name}" "${_game_exe_wine}" \
+      "${_game_args[@]}" &
+    _GS_PID=$!
+    wait "${_GS_PID}"
   fi
 else
   # No bootstrap data — launch game directly.
   # Source: process_linux.go "No bootstrap data -- launch game directly."
-  if [[ "${NO_GAMESCOPE}" == "true" ]]; then
-    "${WINE}" "${_game_exe}" "${_game_args[@]}" &
+  if [[ "${USE_GAMESCOPE}" == "true" ]]; then
+    # shellcheck disable=SC2086
+    ${GS_ARGS} -- "${WINE}" "${_game_exe}" "${_game_args[@]}" &
     _GS_PID=$!
     wait "${_GS_PID}"
   else
-    # shellcheck disable=SC2086
-    ${GS_ARGS} -- "${WINE}" "${_game_exe}" "${_game_args[@]}" &
+    "${WINE}" "${_game_exe}" "${_game_args[@]}" &
     _GS_PID=$!
     wait "${_GS_PID}"
   fi
