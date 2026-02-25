@@ -9,12 +9,12 @@
 #
 #  USAGE
 #    chmod +x cluckers-setup.sh          # make executable (first time only)
-#    ./cluckers-setup.sh                 # interactive install
+#    ./cluckers-setup.sh                 # interactive install (keyboard/mouse)
 #    ./cluckers-setup.sh --auto          # skip all prompts, use defaults
 #    ./cluckers-setup.sh --verbose       # show full Wine debug output
-#    ./cluckers-setup.sh --gamescope     # enable Gamescope compositor (-g)
-#    ./cluckers-setup.sh --steam-deck    # apply game patches (Deck)    (-d)
-#    ./cluckers-setup.sh --controller    # enable controller support   (-c)
+#    ./cluckers-setup.sh --gamescope     # opt-in: enable Gamescope compositor (-g)
+#    ./cluckers-setup.sh --steam-deck    # opt-in: apply game patches (Deck)    (-d)
+#    ./cluckers-setup.sh --controller    # opt-in: enable controller support   (-c)
 #    ./cluckers-setup.sh --update        # check for game update       (-U)
 #    ./cluckers-setup.sh --uninstall     # remove everything           (-u)
 #    ./cluckers-setup.sh --help          # show this help message      (-h)
@@ -1319,12 +1319,20 @@ main() {
       --verbose|-v)      verbose="true" ;;
       --auto|-a)         auto_mode="true" ;;
       --gamescope|-g)    use_gamescope="true" ;;
+      --no-gamescope)    use_gamescope="false" ;;
       --steam-deck|-d)   steam_deck="true"; use_gamescope="false"; controller_mode="true" ;;
       --controller|-c)   controller_mode="true" ;;
+      --no-controller)   controller_mode="false"; [[ -f "${controller_pref_file}" ]] && rm -f "${controller_pref_file}" ;;
       --help|-h)         print_help; exit 0 ;;
       *) ;;
     esac
   done
+
+  # Save preference if enabled.
+  if [[ "${controller_mode}" == "true" ]]; then
+    mkdir -p "${GAME_DIR}"
+    touch "${controller_pref_file}"
+  fi
 
   if [[ "${do_update}" == "true" ]]; then
     run_update "${steam_deck}" "${controller_mode}"
@@ -7308,15 +7316,16 @@ SHM_B64_EOF
   fi
 
   # -- xinput1_3.dll ---------------------------------------------------------
-  local xdll_dst="${TOOLS_DIR}/xinput1_3.dll"
-  if [[ -f "${xdll_dst}" ]] \
-      && [[ "$(sha256sum "${xdll_dst}" | awk '{print $1}')" == "${XINPUT_DLL_SHA256}" ]]; then
-    ok_msg "xinput1_3.dll already installed and verified — skipping."
-  else
-    info_msg "Extracting xinput1_3.dll from embedded base64..."
-    local xdll_tmp
-    xdll_tmp=$(mktemp --suffix=.dll)
-    base64 -d << 'XDLL_B64_EOF' > "${xdll_tmp}"
+  if [[ "${controller_mode}" == "true" ]]; then
+    local xdll_dst="${TOOLS_DIR}/xinput1_3.dll"
+    if [[ -f "${xdll_dst}" ]] \
+        && [[ "$(sha256sum "${xdll_dst}" | awk '{print $1}')" == "${XINPUT_DLL_SHA256}" ]]; then
+      ok_msg "xinput1_3.dll already installed and verified — skipping."
+    else
+      info_msg "Extracting xinput1_3.dll from embedded base64..."
+      local xdll_tmp
+      xdll_tmp=$(mktemp --suffix=.dll)
+      base64 -d << 'XDLL_B64_EOF' > "${xdll_tmp}"
 TVqQAAMAAAAEAAAA//8AALgAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 AAAAgAAAAA4fug4AtAnNIbgBTM0hVGhpcyBwcm9ncmFtIGNhbm5vdCBiZSBydW4gaW4gRE9TIG1v
 ZGUuDQ0KJAAAAAAAAABQRQAAZIYUALH2nmkA8AIA8wUAAPAAJiALAgIpAG4AAACaAAAADAAAQBMA
@@ -11275,13 +11284,16 @@ XDLL_B64_EOF
     mv "${xdll_tmp}" "${xdll_dst}"
     ok_msg "xinput1_3.dll installed."
   fi
+  fi
 
   # Install xinput1_3.dll into the Wine prefix system32 so Wine loads it
   # instead of the built-in stub when the game requests XInput.
   local wine_sys32="${WINEPREFIX}/drive_c/windows/system32"
   mkdir -p "${wine_sys32}"
-  cp "${xdll_dst}" "${wine_sys32}/xinput1_3.dll"
-  ok_msg "xinput1_3.dll placed in Wine system32."
+  if [[ "${controller_mode}" == "true" ]]; then
+    cp "${xdll_dst}" "${wine_sys32}/xinput1_3.dll"
+    ok_msg "xinput1_3.dll placed in Wine system32."
+  fi
 
   # --------------------------------------------------------------------------
   # Step 7 — Extract desktop icon
