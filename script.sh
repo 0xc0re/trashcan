@@ -15,14 +15,14 @@
 #    ./cluckers-setup.sh --gamescope     # opt-in: enable Gamescope compositor (-g)
 #    ./cluckers-setup.sh --steam-deck    # opt-in: apply game patches (Deck)    (-d)
 #    ./cluckers-setup.sh --controller    # opt-in: enable controller support   (-c)
-#    ./cluckers-setup.sh --skip-movies   # opt-in: disable intro movies        (-m)
+#    ./cluckers-setup.sh --show-movies   # opt-out: show intro movies          (-m)
 #    ./cluckers-setup.sh --update        # check for game update       (-U)
 #    ./cluckers-setup.sh --uninstall     # remove everything           (-u)
 #    ./cluckers-setup.sh --help          # show this help message      (-h)
 #
 #  SHORT FLAGS
 #    -a  auto      -v  verbose      -g  gamescope      -d  steam-deck
-#    -c  controller -m  skip-movies  -U  update    -u  uninstall      -h  help
+#    -c  controller -m  show-movies  -U  update    -u  uninstall      -h  help
 #
 #  UPDATE FLAG
 #    --update / -U checks the update server for a newer game version. Update
@@ -56,6 +56,10 @@
 #      • controller_neptune_config.vdf — deploys the custom Deck button layout
 #        to your Steam controller config directory (preserves any existing one)
 #      • Gamescope is not used (SteamOS manages its own compositor)
+#
+#  INTRO MOVIES
+#    Intro movies (Georgia Media, Hi-Rez) are disabled by default to reach
+#    the login screen faster. To re-enable them, pass --show-movies / -m.
 #
 #  PIN A SPECIFIC GAME VERSION
 #    GAME_VERSION=0.36.9999.0 ./cluckers-setup.sh
@@ -755,10 +759,8 @@ DATBLAKE3EOF
 
   if [[ "${needs_update}" == "false" ]]; then
     ok_msg "Game is already up to date (${target_version})."
-    if [[ "${steam_deck_flag}" == "true" || "${controller_flag}" == "true" || "${skip_movies_flag}" == "true" ]]; then
-      step_msg "Applying game patches..."
-      apply_game_patches "${GAME_DIR}" "${steam_deck_flag}" "${controller_flag}" "${skip_movies_flag}"
-    fi
+    step_msg "Applying game patches..."
+    apply_game_patches "${GAME_DIR}" "${steam_deck_flag}" "${controller_flag}" "${skip_movies_flag}"
     printf "\n"
     printf "%b╔══════════════════════════════════════════════════════╗%b\n" "${GREEN}" "${NC}"
     printf "%b║              Already up to date!                     ║%b\n" "${GREEN}" "${NC}"
@@ -903,23 +905,32 @@ apply_game_patches() {
     mkdir -p "${game_dir}"
     touch "${game_dir}/.controller_enabled"
   fi
-  if [[ "${skip_movies_flag}" == "true" ]]; then
+  if [[ "${skip_movies_flag}" == "false" ]]; then
     mkdir -p "${game_dir}"
-    touch "${game_dir}/.skip_movies"
+    touch "${game_dir}/.show_movies"
   fi
 
-  # -- Movies: skip intro movies (rename .bik files) -------------------------
-  if [[ "${skip_movies_flag}" == "true" ]]; then
-    local movie_dir="${game_dir}/Realm-Royale/RealmGame/Content/Movies"
-    if [[ -d "${movie_dir}" ]]; then
+  # -- Movies: handle intro movies (skip or restore) -------------------------
+  local movie_dir="${game_dir}/Realm-Royale/RealmGame/Content/Movies"
+  if [[ -d "${movie_dir}" ]]; then
+    local movie
+    if [[ "${skip_movies_flag}" == "true" ]]; then
       info_msg "Skipping intro movies..."
-      local movie
       for movie in "HiRezLogo.bik" "GeorgiaMedia.bik" "Intro_Legal.bik"; do
         if [[ -f "${movie_dir}/${movie}" ]]; then
           mv "${movie_dir}/${movie}" "${movie_dir}/${movie}.bak" 2>/dev/null || true
         fi
       done
       ok_msg "Intro movies disabled."
+    else
+      # Restore movies if skip_movies_flag is false
+      info_msg "Restoring intro movies..."
+      for movie in "HiRezLogo.bik" "GeorgiaMedia.bik" "Intro_Legal.bik"; do
+        if [[ -f "${movie_dir}/${movie}.bak" ]]; then
+          mv "${movie_dir}/${movie}.bak" "${movie_dir}/${movie}" 2>/dev/null || true
+        fi
+      done
+      ok_msg "Intro movies enabled."
     fi
   fi
 
@@ -1319,7 +1330,7 @@ main() {
   local use_gamescope="false"
   local steam_deck="false"
   local controller_mode="false"
-  local skip_movies="false"
+  local skip_movies="true"
   local resolved_version="${GAME_VERSION}"
   local VERSION_INFO_JSON=""
   local do_update="false"
@@ -1329,9 +1340,9 @@ main() {
   if [[ -f "${controller_pref_file}" ]]; then
     controller_mode="true"
   fi
-  local movies_pref_file="${GAME_DIR}/.skip_movies"
-  if [[ -f "${movies_pref_file}" ]]; then
-    skip_movies="true"
+  local show_movies_pref="${GAME_DIR}/.show_movies"
+  if [[ -f "${show_movies_pref}" ]]; then
+    skip_movies="false"
   fi
 
   # Detected once early — available for Step 4 (DXVK decision) and
@@ -1352,8 +1363,8 @@ main() {
       --steam-deck|-d)   steam_deck="true"; use_gamescope="false"; controller_mode="true" ;;
       --controller|-c)   controller_mode="true" ;;
       --no-controller)   controller_mode="false"; [[ -f "${controller_pref_file}" ]] && rm -f "${controller_pref_file}" ;;
-      --skip-movies|-m)  skip_movies="true" ;;
-      --no-movies)       skip_movies="false"; [[ -f "${movies_pref_file}" ]] && rm -f "${movies_pref_file}" ;;
+      --skip-movies)     skip_movies="true"; [[ -f "${show_movies_pref}" ]] && rm -f "${show_movies_pref}" ;;
+      --show-movies|-m)  skip_movies="false" ;;
       --help|-h)         print_help; exit 0 ;;
       *) ;;
     esac
@@ -1364,9 +1375,9 @@ main() {
     mkdir -p "${GAME_DIR}"
     touch "${controller_pref_file}"
   fi
-  if [[ "${skip_movies}" == "true" ]]; then
+  if [[ "${skip_movies}" == "false" ]]; then
     mkdir -p "${GAME_DIR}"
-    touch "${movies_pref_file}"
+    touch "${show_movies_pref}"
   fi
 
   if [[ "${do_update}" == "true" ]]; then
@@ -11945,23 +11956,22 @@ PYEOF
   #      controller from switching to KB/M mode under Wine.
   #
   #   3. Intro Movies — renames .bik files to .bik.bak to skip the long
-  #      startup logos (Georgia Media / Hi-Rez).
+  #      startup logos (Georgia Media / Hi-Rez). Enabled by default.
+  #      Pass --show-movies / -m to restore them.
   #
   #   4. controller_neptune_config.vdf — deploy the custom Steam Deck button
   #      layout (Steam Deck only).
   #
   # Safe to run multiple times — all patches are idempotent.
   # --------------------------------------------------------------------------
-  if [[ "${steam_deck}" == "true" || "${controller_mode}" == "true" || "${skip_movies}" == "true" ]]; then
-    step_msg "Step 11 — Applying game patches..."
+  step_msg "Step 11 — Applying game patches..."
 
-    if [[ "${steam_deck}" == "true" ]] && ! is_steam_deck; then
-      warn_msg "Steam Deck hardware not detected (board_vendor != Valve)."
-      warn_msg "Applying patches anyway as --steam-deck / -d was passed."
-    fi
-
-    apply_game_patches "${GAME_DIR}" "${steam_deck}" "${controller_mode}" "${skip_movies}"
+  if [[ "${steam_deck}" == "true" ]] && ! is_steam_deck; then
+    warn_msg "Steam Deck hardware not detected (board_vendor != Valve)."
+    warn_msg "Applying patches anyway as --steam-deck / -d was passed."
   fi
+
+  apply_game_patches "${GAME_DIR}" "${steam_deck}" "${controller_mode}" "${skip_movies}"
 
   printf "%b╔══════════════════════════════════════════════════════╗%b\n" "${GREEN}" "${NC}"
   printf "%b║              Installation complete!                  ║%b\n" "${GREEN}" "${NC}"
