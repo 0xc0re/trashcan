@@ -1365,12 +1365,24 @@ main() {
   # --------------------------------------------------------------------------
   step_msg "Step 4 — Installing Windows runtime libraries..."
 
+  # vcrun2022 covers all VC++ redistributables in one install (superset).
   install_winetricks_pkg "vcrun2022"  "Visual C++ 2010-2022 Redistributable"
-  install_winetricks_pkg "d3dx9"      "DirectX 9 helper DLLs (Jun 2010)"
-  # d3dx11_43 is required by verify.go RequiredDLLs — it is a DirectX 11
-  # helper DLL (separate from DXVK). The game crashes with STATUS_DLL_NOT_FOUND
-  # (0xC0000135) at startup if this is missing.
-  install_winetricks_pkg "d3dx11_43"  "DirectX 11 helper DLL (d3dx11_43.dll)"
+
+  # Both d3dx9 and d3dx11_43 extract from the same DirectX Jun 2010 redist
+  # (directx_Jun2010_redist.exe — cached by winetricks after first download).
+  #
+  # d3dx9     — installs d3dx9_24.dll through d3dx9_43.dll. Required by
+  #             Depot 228990 and used by UE3's D3D9 render path.
+  #
+  # d3dx11_43 — installs d3dx11_43.dll. Explicitly listed in verify.go
+  #             RequiredDLLs. Missing this causes STATUS_DLL_NOT_FOUND
+  #             (0xC0000135) at game startup.
+  #
+  # d3d11.dll — provided natively by Wine and by Proton's built-in DXVK.
+  #             No winetricks install needed; verify.go checks for it but
+  #             it is always present after Wine prefix initialisation.
+  install_winetricks_pkg "d3dx9"      "DirectX 9 DLLs d3dx9_24..d3dx9_43 (Jun 2010)"
+  install_winetricks_pkg "d3dx11_43"  "DirectX 11 helper DLL d3dx11_43 (Jun 2010)"
 
   # --------------------------------------------------------------------------
   # Step 5 — Download and verify game files
