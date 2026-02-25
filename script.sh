@@ -10923,9 +10923,20 @@ XDLL_B64_EOF
     fi
   done
   # Fall back to system wine if no Proton installation was found.
+  # wine-cachyos, wine-staging, wine-tkg etc. all install to /usr/bin/wine.
+  # We detect enhanced builds by inspecting the version string — they include
+  # fsync support and benefit from WINEFSYNC=1.
   if [[ -z "${real_wine_path}" ]]; then
     real_wine_path=$(command -v wine 2>/dev/null) \
       || error_exit "No Wine or Proton found. Install wine or Steam + Proton."
+    local _wine_ver=""
+    _wine_ver=$("${real_wine_path}" --version 2>/dev/null || true)
+    if [[ "${_wine_ver}" == *"CachyOS"* ]] \
+      || [[ "${_wine_ver}" == *"staging"* ]] \
+      || [[ "${_wine_ver}" == *"tkg"* ]] \
+      || [[ "${_wine_ver}" == *"Proton"* ]]; then
+      _is_proton="true"
+    fi
   fi
 
   if [[ "${_is_proton}" == "true" ]]; then
@@ -11219,6 +11230,26 @@ LAUNCHEOF
   # find "Cluckers Central" in your app grid / start menu.
   # --------------------------------------------------------------------------
   step_msg "Step 9 — Creating desktop shortcut..."
+
+  # Remove any existing Cluckers Central desktop entries that may have been
+  # created by a previous install or by the Windows launcher running under Wine.
+  local _shortcut_dirs=(
+    "${HOME}/.local/share/applications"
+    "${HOME}/.local/share/applications/wine"
+    "${HOME}/Desktop"
+    "/usr/share/applications"
+  )
+  local _sdir
+  for _sdir in "${_shortcut_dirs[@]}"; do
+    [[ -d "${_sdir}" ]] || continue
+    while IFS= read -r _old; do
+      [[ -f "${_old}" ]] || continue
+      info_msg "Removing existing shortcut: ${_old}"
+      rm -f "${_old}"
+    done < <(find "${_sdir}" -maxdepth 2 \
+      \( -name "*[Cc]luckers*" -o -name "*[Rr]ealm*[Rr]oyale*" \) \
+      2>/dev/null)
+  done
 
   mkdir -p "$(dirname "${DESKTOP_FILE}")"
   cat > "${DESKTOP_FILE}" << EOF
