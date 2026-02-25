@@ -11281,12 +11281,11 @@ fi
 # Cleanup: kill gamescope and wineserver when the game exits, regardless of
 # how it exits (normal close, crash, or signal).
 _cleanup() {
+  trap '' EXIT INT TERM HUP
   # Kill gamescope if we launched it and it is still running.
-  if [[ -n "${_gs_pid:-}" ]] && kill -0 "${_gs_pid}" 2>/dev/null; then
-    kill "${_gs_pid}" 2>/dev/null || true
+  if [[ -n "${_GS_PID:-}" ]] && kill -0 "${_GS_PID}" 2>/dev/null; then
+    kill "${_GS_PID}" 2>/dev/null || true
   fi
-  # Kill all processes in our process group (wine children etc.).
-  kill -- -$$ 2>/dev/null || true
   # Clean up the Wine server for this prefix.
   wineserver -k 2>/dev/null || true
   # Remove temp files we created.
@@ -11303,7 +11302,9 @@ if [[ -s "${_bootstrap_tmp}" ]]; then
   if [[ "${NO_GAMESCOPE}" == "true" ]]; then
     "${WINE}" "${TOOLS_DIR}/shm_launcher.exe" \
       "${_bootstrap_wine}" "${_shm_name}" "${_game_exe_wine}" \
-      "${_game_args[@]}"
+      "${_game_args[@]}" &
+    _GS_PID=$!
+    wait "${_GS_PID}"
   else
     # shellcheck disable=SC2086
     ${GS_ARGS} -- \
@@ -11317,7 +11318,9 @@ else
   # No bootstrap data — launch game directly.
   # Source: process_linux.go "No bootstrap data -- launch game directly."
   if [[ "${NO_GAMESCOPE}" == "true" ]]; then
-    "${WINE}" "${_game_exe}" "${_game_args[@]}"
+    "${WINE}" "${_game_exe}" "${_game_args[@]}" &
+    _GS_PID=$!
+    wait "${_GS_PID}"
   else
     # shellcheck disable=SC2086
     ${GS_ARGS} -- "${WINE}" "${_game_exe}" "${_game_args[@]}" &
