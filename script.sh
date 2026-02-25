@@ -934,6 +934,56 @@ apply_game_patches() {
       done
       ok_msg "Intro movies enabled."
     fi
+
+    # UE3 INI patch for movies
+    info_msg "Patch: Setting bForceNoMovies=True in INI files..."
+    for ini in "${config_dir}/RealmGame.ini" "${config_dir}/DefaultGame.ini"; do
+      mkdir -p "$(dirname "${ini}")"
+      touch "${ini}"
+      chmod u+w "${ini}"
+      if [[ "${skip_movies_flag}" == "true" ]]; then
+        python3 - "${ini}" << 'MOVIE_INI_EOF'
+import sys, os
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8", errors="replace") as f:
+    lines = f.readlines()
+
+new_lines = []
+in_section = False
+found_section = False
+found_key = False
+
+for line in lines:
+    stripped = line.strip()
+    if stripped == "[FullScreenMovie]":
+        in_section = True
+        found_section = True
+    elif stripped.startswith("[") and stripped.endswith("]"):
+        in_section = False
+    
+    if in_section and "bForceNoMovies" in line:
+        line = "bForceNoMovies=True\n"
+        found_key = True
+    
+    new_lines.append(line)
+
+if not found_section:
+    new_lines.append("\n[FullScreenMovie]\nbForceNoMovies=True\n")
+elif not found_key:
+    # Find where the section started and insert it
+    for i, line in enumerate(new_lines):
+        if line.strip() == "[FullScreenMovie]":
+            new_lines.insert(i+1, "bForceNoMovies=True\n")
+            break
+
+with open(path, "w", encoding="utf-8") as f:
+    f.writelines(new_lines)
+MOVIE_INI_EOF
+        info_msg "  Patched $(basename "${ini}")"
+      else
+        sed -i 's/bForceNoMovies=True/bForceNoMovies=False/g' "${ini}" 2>/dev/null || true
+      fi
+    done
   else
     warn_msg "Movie directory not found — skipping movie patch."
   fi
@@ -11694,7 +11744,7 @@ _game_args=(
 
 # Skip intro movies/splash if requested.
 if [[ "${SKIP_MOVIES}" == "true" ]]; then
-  _game_args+=("-nosplash" "-nostartupmovies")
+  _game_args+=("-nosplash" "-nostartupmovies" "-novid" "-nointro")
 fi
 
 # Append bootstrap shared memory argument if a bootstrap blob is present.
@@ -11715,6 +11765,8 @@ _cleanup() {
   # Remove temp files we created.
   [[ -n "${_bootstrap_tmp:-}" ]] && rm -f "${_bootstrap_tmp}"
   [[ -n "${_oidc_tmp:-}" ]] && rm -f "${_oidc_tmp}"
+  # Ensure all children (Wine, etc.) are killed by terminating the process group.
+  kill -TERM -- -$$ 2>/dev/null || true
 }
 trap _cleanup EXIT INT TERM HUP
 
