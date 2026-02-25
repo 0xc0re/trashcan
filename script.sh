@@ -1365,8 +1365,12 @@ main() {
   # --------------------------------------------------------------------------
   step_msg "Step 4 — Installing Windows runtime libraries..."
 
-  install_winetricks_pkg "vcrun2022" "Visual C++ 2010-2022 Redistributable"
-  install_winetricks_pkg "d3dx9"     "DirectX 9 helper DLLs (Jun 2010)"
+  install_winetricks_pkg "vcrun2022"  "Visual C++ 2010-2022 Redistributable"
+  install_winetricks_pkg "d3dx9"      "DirectX 9 helper DLLs (Jun 2010)"
+  # d3dx11_43 is required by verify.go RequiredDLLs — it is a DirectX 11
+  # helper DLL (separate from DXVK). The game crashes with STATUS_DLL_NOT_FOUND
+  # (0xC0000135) at startup if this is missing.
+  install_winetricks_pkg "d3dx11_43"  "DirectX 11 helper DLL (d3dx11_43.dll)"
 
   # --------------------------------------------------------------------------
   # Step 5 — Download and verify game files
