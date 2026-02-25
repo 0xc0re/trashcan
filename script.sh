@@ -1365,24 +1365,19 @@ main() {
   # --------------------------------------------------------------------------
   step_msg "Step 4 — Installing Windows runtime libraries..."
 
-  # vcrun2022 covers all VC++ redistributables in one install (superset).
+  # Packages match verify.go RepairInstructions exactly:
+  #   vcrun2022  — Visual C++ 2010-2022 Redistributable (superset of all prior)
+  #   dxvk       — Vulkan-backed d3d8/d3d9/d3d10/d3d11/dxgi DLLs. Provides
+  #                d3d11.dll checked by verify.go. Also improves performance.
+  #   d3dx11_43  — DirectX 11 helper DLL (d3dx11_43.dll). Explicitly listed
+  #                in verify.go RequiredDLLs. NOT included in dxvk. Missing
+  #                this causes STATUS_DLL_NOT_FOUND (0xC0000135) at startup.
+  #
+  # Note: d3dx9 is intentionally omitted. The game's DX9 render path is not
+  # used (it runs DX11 via -dx11 flag) and d3dx9_* are not in verify.go.
   install_winetricks_pkg "vcrun2022"  "Visual C++ 2010-2022 Redistributable"
-
-  # Both d3dx9 and d3dx11_43 extract from the same DirectX Jun 2010 redist
-  # (directx_Jun2010_redist.exe — cached by winetricks after first download).
-  #
-  # d3dx9     — installs d3dx9_24.dll through d3dx9_43.dll. Required by
-  #             Depot 228990 and used by UE3's D3D9 render path.
-  #
-  # d3dx11_43 — installs d3dx11_43.dll. Explicitly listed in verify.go
-  #             RequiredDLLs. Missing this causes STATUS_DLL_NOT_FOUND
-  #             (0xC0000135) at game startup.
-  #
-  # d3d11.dll — provided natively by Wine and by Proton's built-in DXVK.
-  #             No winetricks install needed; verify.go checks for it but
-  #             it is always present after Wine prefix initialisation.
-  install_winetricks_pkg "d3dx9"      "DirectX 9 DLLs d3dx9_24..d3dx9_43 (Jun 2010)"
-  install_winetricks_pkg "d3dx11_43"  "DirectX 11 helper DLL d3dx11_43 (Jun 2010)"
+  install_winetricks_pkg "dxvk"       "DXVK (Vulkan-backed Direct3D 9/10/11)"
+  install_winetricks_pkg "d3dx11_43"  "DirectX 11 helper DLL (d3dx11_43.dll)"
 
   # --------------------------------------------------------------------------
   # Step 5 — Download and verify game files
@@ -11159,21 +11154,32 @@ _game_args=(
   "-nohomedir"
 )
 
-# Cleanup temp files on exit.
+# Cleanup: kill gamescope and wineserver when the game exits, regardless of
+# how it exits (normal close, crash, or signal). This prevents orphaned
+# gamescope/wineserver processes lingering after the game window is closed.
+_GS_PID=""
 _cleanup() {
-  rm -f "${_oidc_tmp}" "${_bootstrap_tmp:-}"
+  # Remove temp files.
+  rm -f "${_oidc_tmp}" "${_bootstrap_tmp}" 2>/dev/null || true
+  # Kill gamescope if we started it.
+  if [[ -n "${_GS_PID}" ]]; then
+    kill "${_GS_PID}" 2>/dev/null || true
+    wait "${_GS_PID}" 2>/dev/null || true
+  fi
+  # Shut down the Wine server for this prefix so no Wine processes linger.
+  wineserver -k 2>/dev/null || true
 }
-trap _cleanup EXIT
+trap _cleanup EXIT INT TERM
 
-if [[ -n "${_auth_bootstrap}" ]]; then
-  # Write bootstrap blob and launch via shm_launcher.exe.
-  # shm_launcher.exe maps the blob into a named Win32 shared memory region
-  # that the game reads on startup. Source: cluckers/tools/shm_launcher.c
-  _bootstrap_tmp=$(mktemp /tmp/cluckers_bootstrap_XXXXXX)
-  printf '%s' "${_auth_bootstrap}" | base64 -d > "${_bootstrap_tmp}"
-  _bootstrap_wine=$(printf '%s' "${_bootstrap_tmp}" | sed 's|/|\\|g; s|^|Z:|')
-  _game_args+=("-content_bootstrap_shm=${_shm_name}")
+# ---- Launch ---------------------------------------------------------------
+_game_exe="${GAME_DIR}/${GAME_EXE_REL}"
+_game_exe_wine=$(printf '%s' "${_game_exe}" | sed 's|/|\\|g; s|^|Z:|')
+_bootstrap_wine=$(printf '%s' "${_bootstrap_tmp}" | sed 's|/|\\|g; s|^|Z:|')
+_oidc_wine=$(printf '%s' "${_oidc_tmp}" | sed 's|/|\\|g; s|^|Z:|')
 
+if [[ -s "${_bootstrap_tmp}" ]]; then
+  # Launch via shm_launcher.exe: writes bootstrap blob to shared memory then
+  # exec's the game. Source: internal/launch/process_linux.go.
   if [[ "${NO_GAMESCOPE}" == "true" ]]; then
     "${WINE}" "${TOOLS_DIR}/shm_launcher.exe" \
       "${_bootstrap_wine}" "${_shm_name}" "${_game_exe_wine}" \
@@ -11183,18 +11189,23 @@ if [[ -n "${_auth_bootstrap}" ]]; then
     ${GS_ARGS} -- \
       "${WINE}" "${TOOLS_DIR}/shm_launcher.exe" \
         "${_bootstrap_wine}" "${_shm_name}" "${_game_exe_wine}" \
-        "${_game_args[@]}"
+        "${_game_args[@]}" &
+    _GS_PID=$!
+    wait "${_GS_PID}"
   fi
 else
-  # No bootstrap data - launch game directly without shm_launcher.exe.
+  # No bootstrap data — launch game directly.
   # Source: process_linux.go "No bootstrap data -- launch game directly."
   if [[ "${NO_GAMESCOPE}" == "true" ]]; then
     "${WINE}" "${_game_exe}" "${_game_args[@]}"
   else
     # shellcheck disable=SC2086
-    ${GS_ARGS} -- "${WINE}" "${_game_exe}" "${_game_args[@]}"
+    ${GS_ARGS} -- "${WINE}" "${_game_exe}" "${_game_args[@]}" &
+    _GS_PID=$!
+    wait "${_GS_PID}"
   fi
 fi
+
 LAUNCHEOF
 
   chmod +x "${LAUNCHER_SCRIPT}"
