@@ -1524,10 +1524,9 @@ main() {
   for lib in "${py_libs[@]}"; do
     if ! python3 -c "import ${lib}" > /dev/null 2>&1; then
       info_msg "Installing Python '${lib}' library..."
-      # Try standard install, then --user, then --break-system-packages (for Debian/Ubuntu 23.04+)
+      # Try standard install, then --user
       ${pip_cmd} install --quiet "${lib}" 2>/dev/null \
         || ${pip_cmd} install --quiet --user "${lib}" 2>/dev/null \
-        || ${pip_cmd} install --quiet --user --break-system-packages "${lib}" 2>/dev/null \
         || warn_msg "Could not install the Python '${lib}' library. Some features may be limited."
       if python3 -c "import ${lib}" > /dev/null 2>&1; then
         ok_msg "Python '${lib}' installed."
