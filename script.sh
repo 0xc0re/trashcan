@@ -1497,8 +1497,7 @@ main() {
   for lib in "${py_libs[@]}"; do
     if ! python3 -c "import ${lib}" > /dev/null 2>&1; then
       info_msg "Installing Python '${lib}' library..."
-      python3 -m pip install --quiet --break-system-packages "${lib}" 2>/dev/null \
-        || python3 -m pip install --quiet --user "${lib}" \
+      python3 -m pip install --quiet --user "${lib}" \
         || warn_msg "Could not install the Python '${lib}' library. Some features may be limited."
       if python3 -c "import ${lib}" > /dev/null 2>&1; then
         ok_msg "Python '${lib}' installed."
