@@ -1562,10 +1562,6 @@ find_wine() {
   local d p base major minor ver
   for d in "${search_dirs[@]}"; do
     if [[ ! -d "${d}" ]]; then continue; fi
-    # Skip any directory that is clearly for Steam Linux Runtime (SLR).
-    case "${d,,}" in
-      *slr*|*steamlinuxruntime*) continue ;;
-    esac
 
     # 1. Check direct subdirectory (e.g., /opt/proton-cachyos/files/bin/wine64)
     local direct_p=""
@@ -1576,12 +1572,8 @@ find_wine() {
     fi
 
     if [[ -n "${direct_p}" ]]; then
-        # Sanity check: Can this Wine actually run a basic command?
-        # SLR builds fail here because they lack the pressure-vessel environment.
-        if "${direct_p}" wineboot --version >/dev/null 2>&1; then
-            if [[ -z "${newest_proton}" ]]; then
-                newest_proton="${direct_p}"
-            fi
+        if [[ -z "${newest_proton}" ]]; then
+            newest_proton="${direct_p}"
         fi
     fi
 
@@ -1589,10 +1581,6 @@ find_wine() {
     # Use a broad glob to find GE-Proton, proton-cachyos, lutris-ge, etc.
     for p in "${d}"/GE-Proton* "${d}"/proton-cachyos* "${d}"/proton-ge-custom "${d}"/lutris-* "${d}"/wine-ge-*; do
       [[ -e "${p}" ]] || continue
-      # Skip SLR builds in the glob expansion.
-      case "${p,,}" in
-        *slr*|*steamlinuxruntime*) continue ;;
-      esac
       
       local wine_bin=""
       if [[ -f "${p}/files/bin/wine64" ]]; then
@@ -1602,11 +1590,6 @@ find_wine() {
       fi
 
       if [[ -n "${wine_bin}" ]]; then
-        # Sanity check: Can it run wineboot? (More thorough than --version)
-        if ! "${wine_bin}" wineboot --version >/dev/null 2>&1; then
-            continue
-        fi
-
         base=$(basename "${p}")
         # Try to extract version for GE-Proton (e.g., GE-Proton9-20)
         if [[ "${base}" =~ GE-Proton([0-9]+)-([0-9]+) ]]; then
@@ -1769,6 +1752,24 @@ main() {
   # Detect Wine/Proton once upfront — result is used in Step 4 (DXVK) and
   # Step 8 (launcher). find_wine sets the variables passed as arguments.
   find_wine real_wine_path _is_proton _proton_tool_name real_wineserver || true
+
+  # Maintenance Wine: Used for winetricks and wineboot (prefix setup).
+  # SLR Proton builds cannot run standalone and cause hangs in these steps.
+  # We prefer a standalone-functional Wine for maintenance.
+  local maint_wine="wine"
+  local maint_server="wineserver"
+
+  if [[ -n "${real_wine_path}" ]] && "${real_wine_path}" wineboot --version >/dev/null 2>&1; then
+    # The detected Wine is standalone-functional (e.g. GE-Proton or system Wine).
+    maint_wine="${real_wine_path}"
+    maint_server="${real_wineserver}"
+  else
+    # The detected Wine is likely SLR Proton or missing. Fallback to system Wine.
+    if command_exists wine; then
+      maint_wine=$(command -v wine)
+      maint_server=$(command -v wineserver || echo "wineserver")
+    fi
+  fi
 
   # --------------------------------------------------------------------------
   # Step 1 — System tools
@@ -1964,8 +1965,8 @@ main() {
       #   DISPLAY=""                   — no X window for mono/gecko installers
       #   WINEDLLOVERRIDES=mscoree,mshtml=  — skip .NET and IE installers
       DISPLAY="" WINEDLLOVERRIDES="mscoree,mshtml=" \
-        WINE="${real_wine_path}" WINESERVER="${real_wineserver}" \
-        "${real_wine_path}" wineboot --init 2>/dev/null || true
+        WINE="${maint_wine}" WINESERVER="${maint_server}" \
+        "${maint_wine}" wineboot --init 2>/dev/null || true
     fi
     ok_msg "Wine prefix created."
   fi
@@ -1974,8 +1975,8 @@ main() {
     info_msg "Applying WineBus SDL mapping for controllers..."
     # Forces Wine to use the SDL2 library instead of raw HID (fixes double-input/mapping).
     # See: https://wiki.winehq.org/Useful_Registry_Keys
-    WINEPREFIX="${WINEPREFIX}" WINESERVER="${real_wineserver}" "${real_wine_path}" reg add "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus" /v DisableHidraw /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
-    WINEPREFIX="${WINEPREFIX}" WINESERVER="${real_wineserver}" "${real_wine_path}" reg add "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus" /v EnableSDL /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
+    WINEPREFIX="${WINEPREFIX}" WINESERVER="${maint_server}" "${maint_wine}" reg add "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus" /v DisableHidraw /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
+    WINEPREFIX="${WINEPREFIX}" WINESERVER="${maint_server}" "${maint_wine}" reg add "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus" /v EnableSDL /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
   fi
 
   # --------------------------------------------------------------------------
@@ -1995,7 +1996,7 @@ main() {
   step_msg "Step 4 — Installing Windows runtime libraries..."
 
   # Ensure no orphaned wineservers are running from previous steps/runs.
-  WINEPREFIX="${WINEPREFIX}" "${real_wineserver}" -k 2>/dev/null || true
+  WINEPREFIX="${WINEPREFIX}" "${maint_server}" -k 2>/dev/null || true
 
   # Packages match verify.go RepairInstructions exactly:
   #   vcrun2022  — Visual C++ 2010-2022 Redistributable (superset of all prior)
@@ -2007,9 +2008,9 @@ main() {
   #
   # Note: d3dx9 is intentionally omitted. The game's DX9 render path is not
   # used (it runs DX11 via -dx11 flag) and d3dx9_* are not in verify.go.
-  install_winetricks_pkg "vcrun2022"  "Visual C++ 2010-2022 Redistributable" "${real_wine_path}" "${real_wineserver}"
-  install_winetricks_pkg "dxvk"       "DXVK (Vulkan-backed DirectX 11)"       "${real_wine_path}" "${real_wineserver}"
-  install_winetricks_pkg "d3dx11_43"  "DirectX 11 helper DLL (d3dx11_43.dll)" "${real_wine_path}" "${real_wineserver}"
+  install_winetricks_pkg "vcrun2022"  "Visual C++ 2010-2022 Redistributable" "${maint_wine}" "${maint_server}"
+  install_winetricks_pkg "dxvk"       "DXVK (Vulkan-backed DirectX 11)"       "${maint_wine}" "${maint_server}"
+  install_winetricks_pkg "d3dx11_43"  "DirectX 11 helper DLL (d3dx11_43.dll)" "${maint_wine}" "${maint_server}"
 
   # --------------------------------------------------------------------------
   # Step 5 — Download and verify game files
