@@ -904,12 +904,6 @@ DATBLAKE3EOF
 
   if [[ "${needs_update}" == "false" ]]; then
     ok_msg "Game is already up to date (${target_version})."
-    step_msg "Applying game patches..."
-    apply_game_patches "${GAME_DIR}" "${steam_deck_flag}" "${controller_flag}" "${skip_movies_flag}"
-    printf "\n"
-    printf "%b╔══════════════════════════════════════════════════════╗%b\n" "${GREEN}" "${NC}"
-    printf "%b║              Already up to date!                     ║%b\n" "${GREEN}" "${NC}"
-    printf "%b╚══════════════════════════════════════════════════════╝%b\n\n" "${GREEN}" "${NC}"
     return 0
   fi
 
@@ -974,17 +968,6 @@ ZIPBLAKE3EOF
   fi
   rm -f "${zip_path}"
   ok_msg "Game updated to ${target_version}."
-
-  # ---- Optional game patches -------------------------------------------------
-  if [[ "${steam_deck_flag}" == "true" || "${controller_flag}" == "true" || "${skip_movies_flag}" == "true" ]]; then
-    step_msg "Applying game patches..."
-    apply_game_patches "${GAME_DIR}" "${steam_deck_flag}" "${controller_flag}" "${skip_movies_flag}"
-  fi
-
-  printf "\n"
-  printf "%b╔══════════════════════════════════════════════════════╗%b\n" "${GREEN}" "${NC}"
-  printf "%b║              Update complete!                        ║%b\n" "${GREEN}" "${NC}"
-  printf "%b╚══════════════════════════════════════════════════════╝%b\n\n" "${GREEN}" "${NC}"
 }
 
 # Returns 0 if running on a Steam Deck, 1 otherwise.
@@ -1037,6 +1020,17 @@ apply_game_patches() {
   local config_dir="${game_dir}/Realm-Royale/RealmGame/Config"
   local engine_config_dir="${game_dir}/Realm-Royale/Engine/Config"
   local ini
+
+  # List all applicable patches based on preferences
+  info_msg "Evaluating applicable patches:"
+  [[ "${skip_movies_flag}" == "true" ]] && info_msg "  • [Skip Movies] Force intro movies to be skipped"
+  [[ "${skip_movies_flag}" == "false" ]] && info_msg "  • [Restore Movies] Re-enable intro movies"
+  [[ "${steam_deck_flag}" == "true" ]] && info_msg "  • [Steam Deck] Force 1280x800 resolution and fullscreen"
+  if [[ "${steam_deck_flag}" == "true" || "${controller_flag}" == "true" ]]; then
+    info_msg "  • [Controller] Force engine-level input to Gamepad"
+    info_msg "  • [Controller] Neutralize phantom mouse-axis counters (fixes KB/M switching)"
+  fi
+  [[ "${steam_deck_flag}" == "true" ]] && info_msg "  • [Steam Deck] Deploy custom button layout template"
 
   # Remember preference if requested.
   if [[ "${controller_flag}" == "true" ]]; then
@@ -1672,9 +1666,10 @@ main() {
     touch "${show_movies_pref}"
   fi
 
+  local skip_heavy_steps="false"
   if [[ "${do_update}" == "true" ]]; then
     run_update "${steam_deck}" "${controller_mode}" "${skip_movies}"
-    exit 0
+    skip_heavy_steps="true"
   fi
 
   if [[ "${verbose}" == "true" ]]; then
@@ -1781,12 +1776,10 @@ main() {
     fi
   done
 
-  # --------------------------------------------------------------------------
-  # Step 2 — Resolve game version
-  #
-  # Contacts the update server to find the latest game version and download URL.
-  # The server returns a JSON object (VersionInfo) with these fields — the same
-  # structure used by the native cluckers launcher (internal/game/version.go):
+  # Skip heavy steps (Steps 2-6) if we just performed an update.
+  if [[ "${skip_heavy_steps}" == "false" ]]; then
+    # --------------------------------------------------------------------------
+    # Step 2 — Resolve game version
   #
   #   latest_version          — e.g. "0.36.2100.0"
   #   zip_url                 — direct URL to the game zip (~5.3 GB)
@@ -11657,14 +11650,14 @@ XDLL_B64_EOF
   # instead of the built-in stub when the game requests XInput.
   local wine_sys32="${WINEPREFIX}/drive_c/windows/system32"
   mkdir -p "${wine_sys32}"
-  if [[ "${controller_mode}" == "true" ]]; then
-    cp "${xdll_dst}" "${wine_sys32}/xinput1_3.dll"
-    ok_msg "xinput1_3.dll placed in Wine system32."
-  fi
-
-  # --------------------------------------------------------------------------
-  # Step 7 — Extract desktop icon
-  #
+      if [[ "${controller_mode}" == "true" ]]; then
+        cp "${xdll_dst}" "${wine_sys32}/xinput1_3.dll"
+        ok_msg "xinput1_3.dll placed in Wine system32."
+      fi
+    fi
+  
+    # --------------------------------------------------------------------------
+    # Step 7 — Extract desktop icon  #
   # Extracts the Cluckers Central icon from the .exe so it appears correctly
   # in Steam and your application menu. Requires icoutils (wrestool + icotool).
   # If icoutils is missing the script offers to install it; if that also fails
@@ -12202,19 +12195,29 @@ EOF
   ok_msg "Desktop shortcut created at: ${DESKTOP_FILE}"
 
   # --------------------------------------------------------------------------
-  # Step 10 — Steam integration (optional)
-  #
-  # Adds Cluckers Central to Steam as a non-Steam game shortcut so you can
-  # launch it from your Steam library and access the Steam overlay and
-  # controller configurator.
-  #
-  # Steam must be closed before we write its config files. If Steam is running
-  # the changes will be overwritten when Steam exits.
-  # --------------------------------------------------------------------------
   step_msg "Step 10 — Configuring Steam integration (optional)..."
 
   local steam_root=""
-  local candidate
+  local skip_steam="false"
+
+  # Check if Steam is running. Steam must be closed to write to shortcuts.vdf reliably.
+  if pgrep -x "steam" > /dev/null; then
+    warn_msg "Steam is currently running."
+    warn_msg "To ensure the shortcut is added correctly, please close Steam and re-run this script."
+    warn_msg "Otherwise, Steam may overwrite the changes upon exit."
+    if [[ "${auto_mode}" == "false" ]]; then
+      printf "  Continue anyway? [y/N] "
+      local answer=""
+      read -r answer
+      if [[ ! "${answer}" =~ ^[Yy]$ ]]; then
+        info_msg "Skipping Steam integration (user requested)."
+        skip_steam="true"
+      fi
+    fi
+  fi
+
+  if [[ "${skip_steam}" == "false" ]]; then
+    local candidate
   for candidate in \
     "${HOME}/.steam/steam" \
     "${HOME}/.local/share/Steam" \
@@ -12344,10 +12347,11 @@ except Exception as exc:  # pylint: disable=broad-except
 PYEOF
     fi
   fi
+fi
 
-  # --------------------------------------------------------------------------
-  # Install complete
-  # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Install complete
+# --------------------------------------------------------------------------
   printf "\n"
   # --------------------------------------------------------------------------
   # Step 11 — Game patches (Steam Deck, Controller, or Skip Movies)
