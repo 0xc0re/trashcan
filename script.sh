@@ -100,6 +100,12 @@
 # Exit on error, undefined variable, or pipe failure.
 set -euo pipefail
 
+if [[ "${EUID}" -eq 0 ]]; then
+  printf "\n\033[0;31m[ERROR]\033[0m Please do not run this script as root or with sudo.\n" >&2
+  printf "        System dependencies will automatically request sudo if needed.\n\n" >&2
+  exit 1
+fi
+
 # ==============================================================================
 #  User-configurable variables
 #  Edit this section to customise the install without touching anything else.
@@ -135,6 +141,10 @@ GAMESCOPE_ARGS="gamescope -f --force-grab-cursor -W 1920 -H 1080 -r 240 --adapti
 # Nothing else on your system is affected. Uninstalling means deleting this.
 # Path matches wine.PrefixPath() = DataDir()+"/prefix" in internal/wine/prefix.go.
 readonly WINEPREFIX="${HOME}/.cluckers/prefix"
+
+# Python libraries installation target
+readonly CLUCKERS_PYLIBS="${HOME}/.cluckers/pylibs"
+export PYTHONPATH="${CLUCKERS_PYLIBS}:${PYTHONPATH:-}"
 
 # Launcher script written to ~/.local/bin during install.
 readonly LAUNCHER_SCRIPT="${HOME}/.local/bin/cluckers-central.sh"
@@ -438,18 +448,12 @@ verify_sha256() {
 run_uninstall() {
   step_msg "Uninstalling Cluckers Central..."
 
-  # Remove Wine prefix (contains all Windows libraries and game config).
-  if [[ -d "${WINEPREFIX}" ]]; then
-    info_msg "Removing Wine prefix at ${WINEPREFIX}..."
-    rm -rf "${WINEPREFIX}"
-    ok_msg "Wine prefix removed."
-  fi
+  local cluckers_home="${HOME}/.cluckers"
 
-  # Remove game data directory.
-  if [[ -d "${GAME_DIR}" ]]; then
-    info_msg "Removing game files at ${GAME_DIR}..."
-    rm -rf "${GAME_DIR}"
-    ok_msg "Game files removed."
+  if [[ -d "${cluckers_home}" ]]; then
+    info_msg "Removing Cluckers profile at ${cluckers_home}..."
+    rm -rf "${cluckers_home}"
+    ok_msg "Cluckers profile removed."
   fi
 
   local -a to_remove=(
@@ -1767,10 +1771,9 @@ main() {
   local lib
   for lib in "${py_libs[@]}"; do
     if ! python3 -c "import ${lib}" > /dev/null 2>&1; then
-      info_msg "Installing Python '${lib}' library..."
-      # Try standard install, then --user
-      ${pip_cmd} install --quiet "${lib}" 2>/dev/null \
-        || ${pip_cmd} install --quiet --user "${lib}" 2>/dev/null \
+      info_msg "Installing Python '${lib}' library to local profile..."
+      mkdir -p "${CLUCKERS_PYLIBS}"
+      ${pip_cmd} install --quiet --target "${CLUCKERS_PYLIBS}" "${lib}" 2>/dev/null \
         || warn_msg "Could not install the Python '${lib}' library. Some features may be limited."
       if python3 -c "import ${lib}" > /dev/null 2>&1; then
         ok_msg "Python '${lib}' installed."
