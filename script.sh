@@ -323,9 +323,11 @@ install_icoutils() {
 # Arguments:
 #   $1 - winetricks package identifier (e.g. "vcrun2022").
 #   $2 - Human-readable description for progress output.
+#   $3 - (Optional) Path to the Wine binary to use.
 install_winetricks_pkg() {
   local -r pkg="$1"
   local -r desc="$2"
+  local -r wine_path="${3:-wine}"
   local -r log="${WINEPREFIX}/winetricks.log"
 
   if [[ -f "${log}" ]] && grep -qw "${pkg}" "${log}" 2>/dev/null; then
@@ -334,7 +336,7 @@ install_winetricks_pkg() {
   fi
 
   info_msg "Installing ${desc}..."
-  if winetricks -q "${pkg}"; then
+  if WINE="${wine_path}" winetricks -q "${pkg}"; then
     ok_msg "${desc} installed."
   else
     warn_msg "${pkg} install failed — continuing anyway."
@@ -947,8 +949,8 @@ ZIPBLAKE3EOF
     ) || actual_blake3="skip"
 
     if [[ "${actual_blake3}" == "skip" ]]; then
-      warn_msg "blake3 module not installed — skipping zip BLAKE3 verification."
-      warn_msg "Install with: pip install blake3"
+      ok_msg "Game download complete. (Integrity verification skipped — blake3 Python module not installed)."
+      info_msg "To enable automatic file verification in the future, you can run: pip install blake3"
     elif [[ "${actual_blake3}" != "${zip_blake3}" ]]; then
       rm -f "${zip_path}"
       error_exit "BLAKE3 mismatch — zip may be corrupt. Re-run --update to retry.
@@ -1912,9 +1914,9 @@ main() {
   #
   # Note: d3dx9 is intentionally omitted. The game's DX9 render path is not
   # used (it runs DX11 via -dx11 flag) and d3dx9_* are not in verify.go.
-  install_winetricks_pkg "vcrun2022"  "Visual C++ 2010-2022 Redistributable"
-  install_winetricks_pkg "dxvk"       "DXVK (Vulkan-backed DirectX 11)"
-  install_winetricks_pkg "d3dx11_43"  "DirectX 11 helper DLL (d3dx11_43.dll)"
+  install_winetricks_pkg "vcrun2022"  "Visual C++ 2010-2022 Redistributable" "${real_wine_path}"
+  install_winetricks_pkg "dxvk"       "DXVK (Vulkan-backed DirectX 11)"       "${real_wine_path}"
+  install_winetricks_pkg "d3dx11_43"  "DirectX 11 helper DLL (d3dx11_43.dll)" "${real_wine_path}"
 
   # --------------------------------------------------------------------------
   # Step 5 — Download and verify game files
@@ -1969,8 +1971,8 @@ BLAKE3EOF
       ) || actual_blake3="skip"
 
       if [[ "${actual_blake3}" == "skip" ]]; then
-        warn_msg "blake3 Python module not installed — skipping BLAKE3 verification."
-        warn_msg "Install with: pip install blake3"
+        ok_msg "Game download complete. (Integrity verification skipped — blake3 Python module not installed)."
+        info_msg "To enable automatic file verification in the future, you can run: pip install blake3"
       elif [[ "${actual_blake3}" != "${zip_blake3}" ]]; then
         rm -f "${zip_path}"
         error_exit "BLAKE3 mismatch — game zip may be corrupt.
