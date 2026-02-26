@@ -1994,6 +1994,9 @@ main() {
   # --------------------------------------------------------------------------
   step_msg "Step 4 — Installing Windows runtime libraries..."
 
+  # Ensure no orphaned wineservers are running from previous steps/runs.
+  WINEPREFIX="${WINEPREFIX}" "${real_wineserver}" -k 2>/dev/null || true
+
   # Packages match verify.go RepairInstructions exactly:
   #   vcrun2022  — Visual C++ 2010-2022 Redistributable (superset of all prior)
   #   dxvk       — Vulkan-backed d3d8/d3d9/d3d10/d3d11/dxgi DLLs. Provides
