@@ -913,6 +913,7 @@ DATBLAKE3EOF
 
   if [[ "${needs_update}" == "false" ]]; then
     ok_msg "Game is already up to date (${target_version})."
+    ok_msg "Game version verified successfully."
     return 0
   fi
 
@@ -1530,23 +1531,44 @@ find_wine() {
   local d p base major minor ver
   for d in "${search_dirs[@]}"; do
     if [[ ! -d "${d}" ]]; then continue; fi
+    if [[ "${d}" == *"-slr"* ]]; then continue; fi # Skip SLR directories
 
     # 1. Check direct subdirectory (e.g., /opt/proton-cachyos/files/bin/wine64)
     # or Lutris runners (e.g., .../lutris-ge-6.16-x86_64/bin/wine64)
+    local direct_p=""
     if [[ -f "${d}/files/bin/wine64" ]]; then
-        if [[ -z "${newest_proton}" ]]; then
-            newest_proton="${d}/files/bin/wine64"
-        fi
+        direct_p="${d}/files/bin/wine64"
     elif [[ -f "${d}/bin/wine64" ]]; then
-        if [[ -z "${newest_proton}" ]]; then
-            newest_proton="${d}/bin/wine64"
+        direct_p="${d}/bin/wine64"
+    fi
+
+    if [[ -n "${direct_p}" ]]; then
+        # Quick sanity check: can this binary actually run? (Proton SLR builds often fail here)
+        if "${direct_p}" --version >/dev/null 2>&1; then
+            if [[ -z "${newest_proton}" ]]; then
+                newest_proton="${direct_p}"
+            fi
         fi
     fi
 
     # 2. Check for common Proton and custom Wine prefixes
     # Use a broad glob to find GE-Proton, proton-cachyos, lutris-ge, etc.
     for p in "${d}"/GE-Proton* "${d}"/proton-cachyos* "${d}"/proton-ge-custom "${d}"/lutris-* "${d}"/wine-ge-*; do
+      if [[ "${p}" == *"-slr"* ]]; then continue; fi # Skip SLR builds
+      
+      local wine_bin=""
       if [[ -f "${p}/files/bin/wine64" ]]; then
+        wine_bin="${p}/files/bin/wine64"
+      elif [[ -f "${p}/bin/wine64" ]]; then
+        wine_bin="${p}/bin/wine64"
+      fi
+
+      if [[ -n "${wine_bin}" ]]; then
+        # Sanity check before considering this version.
+        if ! "${wine_bin}" --version >/dev/null 2>&1; then
+            continue
+        fi
+
         base=$(basename "${p}")
         # Try to extract version for GE-Proton (e.g., GE-Proton9-20)
         if [[ "${base}" =~ GE-Proton([0-9]+)-([0-9]+) ]]; then
@@ -1555,16 +1577,11 @@ find_wine() {
           ver=$(printf "%05d-%05d" "${major}" "${minor}")
           if [[ "${ver}" > "${newest_version}" || -z "${newest_proton}" ]]; then
             newest_version="${ver}"
-            newest_proton="${p}/files/bin/wine64"
+            newest_proton="${wine_bin}"
           fi
         elif [[ -z "${newest_proton}" ]]; then
           # Fallback for other Protons without standard GE versioning
-          newest_proton="${p}/files/bin/wine64"
-        fi
-      elif [[ -f "${p}/bin/wine64" ]]; then
-        # Handle versions that don't use 'files' subfolder (e.g. some Lutris/Bottles runners)
-        if [[ -z "${newest_proton}" ]]; then
-          newest_proton="${p}/bin/wine64"
+          newest_proton="${wine_bin}"
         fi
       fi
     done
@@ -1783,12 +1800,26 @@ main() {
   local lib
   for lib in "${py_libs[@]}"; do
     if ! python3 -c "import ${lib}" > /dev/null 2>&1; then
-      info_msg "Installing Python '${lib}' library to local profile..."
-      mkdir -p "${CLUCKERS_PYLIBS}"
-      ${pip_cmd} install --quiet --target "${CLUCKERS_PYLIBS}" "${lib}" 2>/dev/null \
-        || warn_msg "Could not install the Python '${lib}' library. Some features may be limited."
-      if python3 -c "import ${lib}" > /dev/null 2>&1; then
-        ok_msg "Python '${lib}' installed."
+      info_msg "Python '${lib}' library is missing (needed for deep verification/Steam integration)."
+      local install_it="true"
+      if [[ "${auto_mode}" == "false" ]]; then
+        printf "  Install it now to ~/.cluckers/pylibs? [Y/n] "
+        local answer=""
+        read -r answer
+        if [[ "${answer}" =~ ^[Nn]$ ]]; then
+          install_it="false"
+          warn_msg "Skipping '${lib}' installation. Related features will be disabled."
+        fi
+      fi
+
+      if [[ "${install_it}" == "true" ]]; then
+        info_msg "Installing Python '${lib}' library to local profile..."
+        mkdir -p "${CLUCKERS_PYLIBS}"
+        if ${pip_cmd} install --quiet --target "${CLUCKERS_PYLIBS}" "${lib}" 2>/dev/null; then
+          ok_msg "Python '${lib}' installed successfully."
+        else
+          warn_msg "Could not install the Python '${lib}' library. Some features may be limited."
+        fi
       fi
     fi
   done
@@ -1947,6 +1978,7 @@ main() {
   local local_game_exe="${GAME_DIR}/${GAME_EXE_REL}"
   if [[ -f "${local_game_exe}" ]]; then
     ok_msg "Game files already present at ${GAME_DIR} — skipping download."
+    ok_msg "Game verified (using existing installation; deep integrity check skipped)."
   else
     info_msg "Downloading game zip from ${zip_url}"
     info_msg "(This is ~5.3 GB — it may take a while on slower connections.)"
