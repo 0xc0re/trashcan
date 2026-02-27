@@ -910,8 +910,9 @@ install_winetricks_multi() {
     empty_str=$(printf "%${empty}s" "" | tr ' ' '-')
     
     # Try to find what's currently executing from the output.
-    # Use a subshell with set +e to safely extract the verb without triggering pipefail.
-    current_verb=$(set +e; grep "Executing" "${wt_out}" 2>/dev/null | tail -n1 | sed 's/.*load_//; s/ .*//' | cut -c1-15)
+    # We use || true to prevent the script from exiting when grep finds no matches
+    # (which returns exit code 1), as set -e and pipefail are active.
+    current_verb=$(grep "Executing" "${wt_out}" 2>/dev/null | tail -n1 | sed 's/.*load_//; s/ .*//' | cut -c1-15 || true)
     [[ -z "${current_verb}" ]] && current_verb="initialising"
 
     printf "\r  %b[PROG]%b  [%s%s] %d%% (%d/%d) %-15s [%c]" \
@@ -1321,10 +1322,10 @@ parallel_download() {
   headers=$(curl -sI -L "$url" 2>/dev/null)
   local size
   size=$(printf '%s' "$headers" \
-    | grep -i '^content-length:' | tail -n1 | awk '{print $2}' | tr -d '\r')
+    | grep -i '^content-length:' | tail -n1 | awk '{print $2}' | tr -d '\r' || true)
   local accept_ranges
   accept_ranges=$(printf '%s' "$headers" \
-    | grep -i '^accept-ranges:' | tail -n1 | tr -d '\r' | awk '{print $2}')
+    | grep -i '^accept-ranges:' | tail -n1 | tr -d '\r' | awk '{print $2}' || true)
 
   # If the server doesn't support range requests, or we couldn't get the file
   # size, fall back to a single-threaded download with resume support.
