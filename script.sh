@@ -183,18 +183,16 @@ readonly GAME_EXE_REL="Realm-Royale/Binaries/Win64/ShippingPC-RealmGameNoEditor.
 # removing Steam non-Steam-game shortcuts so the correct shortcut is found.
 # Verify: https://store.steampowered.com/app/813820/Realm_Royale_Reforged/
 readonly REALM_ROYALE_APPID="813820"
-readonly STEAM_CDN_URL="https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${REALM_ROYALE_APPID}"
+readonly STEAM_ASSET_BASE="https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${REALM_ROYALE_APPID}"
 
 # High-quality assets from Steam for shortcuts and the Steam library.
-# logo.png is the clear logo, library_600x900_2x.jpg is the vertical grid.
-# library_hero.jpg is the hero background.
-readonly STEAM_LOGO_URL="${STEAM_CDN_URL}/logo.png?t=1739811771"
-readonly STEAM_GRID_URL="${STEAM_CDN_URL}/library_600x900_2x.jpg?t=1739811771"
-readonly STEAM_HERO_URL="${STEAM_CDN_URL}/library_hero_2x.jpg?t=1739811771"
-readonly STEAM_WIDE_URL="${STEAM_CDN_URL}/capsule_616x353.jpg?t=1739811771"
-readonly STEAM_HEADER_URL="${STEAM_CDN_URL}/header.jpg?t=1739811771"
+readonly STEAM_LOGO_URL="${STEAM_ASSET_BASE}/logo.png?t=1739811771"
+readonly STEAM_GRID_URL="${STEAM_ASSET_BASE}/library_600x900_2x.jpg?t=1739811771"
+readonly STEAM_HERO_URL="${STEAM_ASSET_BASE}/library_hero_2x.jpg?t=1739811771"
+readonly STEAM_WIDE_URL="${STEAM_ASSET_BASE}/capsule_616x353.jpg?t=1739811771"
+readonly STEAM_HEADER_URL="${STEAM_ASSET_BASE}/header.jpg?t=1739811771"
 # community_icon is often best for the desktop shortcut as it's a square logo.
-readonly STEAM_COMMUNITY_ICON_URL="https://shared.fastly.steamstatic.com/community_assets/images/apps/813820/068664cf452a9f2388cf1ccf1f239fc967ff9629.jpg"
+readonly STEAM_COMMUNITY_ICON_URL="https://shared.fastly.steamstatic.com/community_assets/images/apps/${REALM_ROYALE_APPID}/068664cf452a9f2388cf1ccf1f239fc967ff9629.jpg"
 
 readonly STEAM_ASSETS_DIR="${HOME}/.cluckers/assets"
 readonly STEAM_LOGO_PATH="${STEAM_ASSETS_DIR}/logo.png"
@@ -348,6 +346,7 @@ get_wine_env_additions() {
     "lib64/wine/x86_64-unix" "lib/wine/i386-unix"
     "lib64/wine/x86_64-windows" "lib/wine/i386-windows"
     "lib/x86_64-linux-gnu" "lib/i386-linux-gnu"
+    "lib/x86_64-linux-gnu/wine" "lib/i386-linux-gnu/wine"
   )
   for ld in "${lib_dirs[@]}"; do
     if [[ -d "${root_dir}/${ld}" ]]; then
@@ -2140,34 +2139,39 @@ find_wine() {
     # Use a broad glob to find GE-Proton, proton-cachyos, lutris-ge, etc.
     for p in "${d}"/GE-Proton* "${d}"/proton-cachyos* \
               "${d}"/proton-ge-custom "${d}"/lutris-* "${d}"/wine-ge-*; do
+      local check_exe=""
       if [[ -f "${p}/files/bin/wine64" ]]; then
+        check_exe="${p}/files/bin/wine64"
+      elif [[ -f "${p}/bin/wine64" ]]; then
+        check_exe="${p}/bin/wine64"
+      fi
+
+      if [[ -n "${check_exe}" ]]; then
         base=$(basename "${p}")
+        
+        # Test if the Wine binary can actually run a simple command.
+        # This filters out SLR builds that fail outside Steam Runtime.
+        local lib_add
+        lib_add=$(get_wine_env_additions "${check_exe}")
+        lib_add="${lib_add#*|}" # Get just the libs part
+        lib_add="${lib_add%%|*}"
+        
+        if ! env LD_LIBRARY_PATH="${lib_add}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+           "${check_exe}" cmd.exe /c exit >/dev/null 2>&1; then
+          continue
+        fi
+
         # Try to extract version for GE-Proton (e.g., GE-Proton9-20)
         if [[ "${base}" =~ GE-Proton([0-9]+)-([0-9]+) ]]; then
           major="${BASH_REMATCH[1]}"
           minor="${BASH_REMATCH[2]}"
           ver=$(printf "%05d-%05d" "${major}" "${minor}")
           if [[ "${ver}" > "${newest_version}" || -z "${newest_proton}" ]]; then
-            # Sanity-check: use --version (pure print, no wineserver spawn) instead
-            # of wineboot --version which initialises a wineserver process and causes
-            # the 7 MB/s memory-growth symptom seen in btop during detection.
-            if "${p}/files/bin/wine64" --version >/dev/null 2>&1; then
-              newest_version="${ver}"
-              newest_proton="${p}/files/bin/wine64"
-            fi
+            newest_version="${ver}"
+            newest_proton="${check_exe}"
           fi
         elif [[ -z "${newest_proton}" ]]; then
-          # Fallback for other Protons without standard GE versioning.
-          if [[ -x "${p}/files/bin/wine64" ]]; then
-            newest_proton="${p}/files/bin/wine64"
-          fi
-        fi
-      elif [[ -f "${p}/bin/wine64" ]]; then
-        # Handle versions that don't use 'files' subfolder (e.g. some Lutris/Bottles runners)
-        if [[ -z "${newest_proton}" ]]; then
-          if [[ -x "${p}/bin/wine64" ]]; then
-            newest_proton="${p}/bin/wine64"
-          fi
+          newest_proton="${check_exe}"
         fi
       fi
     done
@@ -13360,28 +13364,31 @@ try:
         STEAM_LOGO: ["_logo"],  # Clear logo
     }
 
-    # For non-Steam games, Steam uses the 64-bit AppID for art files.
-    # The 64-bit ID is (unsigned_32bit_crc << 32) | 0x02000000.
-    # We deploy to BOTH the 32-bit CRC and the 64-bit ID to be safe.
-    long_id = (unsigned_id << 32) | 0x02000000
+    # For non-Steam games, Steam uses various IDs for filenames in grid/.
+    # 1. The CRC32 of (exe+name) - used for vertical grid 'p' and landscape.
+    # 2. The CRC32 with high bit set - sometimes used.
+    # 3. The 64-bit AppID - (unsigned_32bit_crc << 32) | 0x02000000.
+    crc_unsigned = binascii.crc32((LAUNCHER + APP_NAME).encode("utf-8")) & 0xFFFFFFFF
+    crc_signed   = (crc_unsigned | 0x80000000) & 0xFFFFFFFF
+    long_id      = (crc_unsigned << 32) | 0x02000000
+
+    potential_ids = [str(crc_unsigned), str(crc_signed), str(long_id)]
 
     for src, suffixes in art_map.items():
         if not os.path.exists(src):
             continue
         ext = os.path.splitext(src)[1]
         for suffix in suffixes:
-            # Try both short and long IDs
-            for aid in [str(unsigned_id), str(long_id)]:
+            for aid in potential_ids:
                 dest = os.path.join(grid_dir, f"{aid}{suffix}{ext}")
                 try:
                     shutil.copy2(src, dest)
                 except Exception:
                     pass
             # Also try with .jpg and .png explicitly if the extension doesn't match
-            # some versions of Steam are picky.
             for alt_ext in [".jpg", ".png"]:
                 if ext.lower() != alt_ext:
-                    for aid in [str(unsigned_id), str(long_id)]:
+                    for aid in potential_ids:
                         dest = os.path.join(grid_dir, f"{aid}{suffix}{alt_ext}")
                         try:
                             shutil.copy2(src, dest)
