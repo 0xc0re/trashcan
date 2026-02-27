@@ -1995,7 +1995,9 @@ main() {
       #   WINEDLLOVERRIDES=mscoree,mshtml=  — skip .NET and IE installers
       DISPLAY="" WINEDLLOVERRIDES="mscoree,mshtml=" \
         WINE="${maint_wine}" WINESERVER="${maint_server}" \
-        "${maint_wine}" wineboot --init 2>/dev/null || true
+        "${maint_wine}" wineboot --init || true
+      # Stabilize the prefix
+      WINESERVER="${maint_server}" "${maint_server}" -w || true
     fi
     ok_msg "Wine prefix created."
   fi
@@ -2103,9 +2105,9 @@ BLAKE3EOF
     if command -v bsdtar >/dev/null 2>&1; then
       bsdtar -xf "${zip_path}" -C "${GAME_DIR}" || error_exit "Extraction failed. Try re-running to re-download."
     elif command -v 7z >/dev/null 2>&1; then
-      7z x -y "${zip_path}" -o"${GAME_DIR}" >/dev/null || error_exit "Extraction failed. Try re-running to re-download."
+      7z x -y "${zip_path}" -o"${GAME_DIR}" || error_exit "Extraction failed. Try re-running to re-download."
     else
-      UNZIP_DISABLE_ZIPBOMB_DETECTION=TRUE unzip -q -o "${zip_path}" -d "${GAME_DIR}" \
+      UNZIP_DISABLE_ZIPBOMB_DETECTION=TRUE unzip -o "${zip_path}" -d "${GAME_DIR}" \
         || error_exit "Extraction failed. Try re-running to re-download."
     fi
     rm -f "${zip_path}"
