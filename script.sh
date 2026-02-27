@@ -196,13 +196,17 @@ readonly STEAM_ASSET_BASE="https://shared.fastly.steamstatic.com/store_item_asse
 readonly STEAM_LOGO_URL="${STEAM_ASSET_BASE}/logo_2x.png?t=1739811771"
 readonly STEAM_GRID_URL="${STEAM_ASSET_BASE}/library_600x900_2x.jpg?t=1739811771"
 readonly STEAM_HERO_URL="${STEAM_ASSET_BASE}/library_hero_2x.jpg?t=1739811771"
+readonly STEAM_WIDE_URL="${STEAM_ASSET_BASE}/capsule_616x353.jpg?t=1739811771"
+readonly STEAM_HEADER_URL="${STEAM_ASSET_BASE}/header.jpg?t=1739811771"
 readonly STEAM_ICON_URL="https://shared.fastly.steamstatic.com/community_assets/images/apps/813820/068664cf452a9f2388cf1ccf1f239fc967ff9629.jpg"
 
 readonly STEAM_ASSETS_DIR="${CLUCKERS_ROOT}/assets"
 readonly STEAM_LOGO_PATH="${STEAM_ASSETS_DIR}/logo.png"
 readonly STEAM_GRID_PATH="${STEAM_ASSETS_DIR}/grid.jpg"
 readonly STEAM_HERO_PATH="${STEAM_ASSETS_DIR}/hero.jpg"
-readonly STEAM_ICON_PATH="${STEAM_ASSETS_DIR}/icon.png"
+readonly STEAM_WIDE_PATH="${STEAM_ASSETS_DIR}/wide.jpg"
+readonly STEAM_HEADER_PATH="${STEAM_ASSETS_DIR}/header.jpg"
+readonly STEAM_ICON_PATH="${STEAM_ASSETS_DIR}/icon.jpg"
 
 # Directory where the two helper .exe / .dll binaries are stored after setup.
 readonly TOOLS_DIR="${HOME}/.local/share/cluckers-central/tools"
@@ -1226,7 +1230,13 @@ if os.path.exists(localconfig_path):
         
         if str(shortcut_appid) in apps:
             del apps[str(shortcut_appid)]
-            print(f"{_OK} Removed Cluckers Central localconfig settings.")
+            print(f"{_OK} Removed Cluckers Central localconfig settings (signed).")
+            changed = True
+        
+        unsigned_id = compute_shortcut_id(LAUNCHER, APP_NAME)
+        if str(unsigned_id) in apps:
+            del apps[str(unsigned_id)]
+            print(f"{_OK} Removed Cluckers Central localconfig settings (unsigned).")
             changed = True
 
         if changed:
@@ -1234,6 +1244,38 @@ if os.path.exists(localconfig_path):
                 vdf.dump(lc, fh, pretty=True)
     except Exception as exc:  # pylint: disable=broad-except
         print(f"{_WARN} Could not clean localconfig.vdf: {exc}")
+
+  # -- Steam grid artwork cleanup --------------------------------------------
+  local steam_root=""
+  for candidate in \
+    "${HOME}/.steam/steam" \
+    "${HOME}/.local/share/Steam" \
+    "${HOME}/.var/app/com.valvesoftware.Steam/.local/share/Steam"; do
+    if [[ -d "${candidate}" ]]; then
+      steam_root="${candidate}"
+      break
+    fi
+  done
+
+  if [[ -n "${steam_root}" ]]; then
+    local steam_userdata="${steam_root}/userdata"
+    if [[ -d "${steam_userdata}" ]]; then
+      local unsigned_id
+      unsigned_id=$(python3 - "${LAUNCHER_SCRIPT}" "${APP_NAME}" << 'PYEOF'
+import binascii, sys
+exe, name = sys.argv[1], sys.argv[2]
+crc = binascii.crc32((exe + name).encode("utf-8")) & 0xFFFFFFFF
+print((crc | 0x80000000) & 0xFFFFFFFF)
+PYEOF
+)
+      local user_dir
+      for user_dir in "${steam_userdata}"/*; do
+        [[ -d "${user_dir}/grid" ]] || continue
+        # Remove all potential artwork filenames.
+        rm -f "${user_dir}/grid/${unsigned_id}"* 2>/dev/null
+      done
+    fi
+  fi
 
 # -- config.vdf -------------------------------------------------------------
 config_path = os.path.join(STEAM_ROOT, "config", "config.vdf")
@@ -2833,6 +2875,16 @@ EOF
       info_msg "Copying Proton prefix template from ${proton_template}..."
       cp -r "${proton_template}"/* "${WINEPREFIX}/"
     else
+      # If we are about to use Proton, ensure there are no conflicting real files
+      # where Proton expects to place symlinks (e.g. iexplore.exe).
+      if [[ "${_is_proton}" == "true" ]]; then
+        local ie_path="${WINEPREFIX}/drive_c/Program Files/Internet Explorer/iexplore.exe"
+        if [[ -f "${ie_path}" && ! -L "${ie_path}" ]]; then
+          info_msg "Removing conflicting iexplore.exe to allow Proton symlinking..."
+          rm -f "${ie_path}"
+        fi
+      fi
+
       # Suppress Wine GUI dialogs during prefix initialisation:
       #   DISPLAY=""                        — no X window for mono/gecko installers
       #   WINEDLLOVERRIDES=mscoree,mshtml=  — skip .NET and IE installers
@@ -12830,10 +12882,12 @@ XDLL_B64_EOF
   if command_exists curl; then
     info_msg "Downloading high-quality assets from Steam CDN..."
     
-    # Download assets individually to be resilient.
+        # Download assets individually to be resilient.
         curl ${CURL_FLAGS}f -o "${STEAM_LOGO_PATH}" "${STEAM_LOGO_URL}" || true
         curl ${CURL_FLAGS}f -o "${STEAM_GRID_PATH}" "${STEAM_GRID_URL}" || true
         curl ${CURL_FLAGS}f -o "${STEAM_HERO_PATH}" "${STEAM_HERO_URL}" || true
+        curl ${CURL_FLAGS}f -o "${STEAM_WIDE_PATH}" "${STEAM_WIDE_URL}" || true
+        curl ${CURL_FLAGS}f -o "${STEAM_HEADER_PATH}" "${STEAM_HEADER_URL}" || true
     
         if curl ${CURL_FLAGS}f -o "${STEAM_ICON_PATH}" "${STEAM_ICON_URL}"; then      cp "${STEAM_ICON_PATH}" "${ICON_PATH}"
       asset_downloaded="true"
@@ -13449,6 +13503,8 @@ EOF
       STEAM_GRID_PATH_ENV="${STEAM_GRID_PATH}" \
       STEAM_HERO_PATH_ENV="${STEAM_HERO_PATH}" \
       STEAM_LOGO_PATH_ENV="${STEAM_LOGO_PATH}" \
+      STEAM_WIDE_PATH_ENV="${STEAM_WIDE_PATH}" \
+      STEAM_HEADER_PATH_ENV="${STEAM_HEADER_PATH}" \
       STEAM_ICON_PATH_ENV="${STEAM_ICON_PATH}" \
       python3 - << 'PYEOF'
 """Adds Cluckers Central to Steam as a non-Steam shortcut."""
@@ -13467,6 +13523,8 @@ APP_NAME        = os.environ["APP_NAME_ENV"]
 STEAM_GRID      = os.environ["STEAM_GRID_PATH_ENV"]
 STEAM_HERO      = os.environ["STEAM_HERO_PATH_ENV"]
 STEAM_LOGO      = os.environ["STEAM_LOGO_PATH_ENV"]
+STEAM_WIDE      = os.environ["STEAM_WIDE_PATH_ENV"]
+STEAM_HEADER    = os.environ["STEAM_HEADER_PATH_ENV"]
 
 _OK   = "  [\033[0;32m OK \033[0m]"
 _WARN = "  [\033[1;33mWARN\033[0m]"
@@ -13541,12 +13599,16 @@ try:
     # Mapping of library art types to their respective files and suffixes.
     # Steam looks for files named <appid><suffix> in the grid/ directory.
     #   p      - Vertical grid (poster)
+    #   (none) - Horizontal grid (landscape)
     #   _hero  - Background hero image
     #   _logo  - Clear logo image
+    #   _header - Small header image
     art_map = {
         STEAM_GRID: ["p"],      # Vertical grid
+        STEAM_WIDE: [""],       # Horizontal grid (no suffix)
         STEAM_HERO: ["_hero"],  # Hero background
         STEAM_LOGO: ["_logo"],  # Clear logo
+        STEAM_HEADER: ["_header"], # Header image
     }
 
     # For non-Steam games, Steam uses various IDs for filenames in grid/.
@@ -13554,7 +13616,7 @@ try:
     # 2. 32-bit CRC (signed)
     # 3. 64-bit AppID - (unsigned_32bit_crc << 32) | 0x02000000.
     # 4. 32-bit CRC with top bit cleared.
-    crc_unsigned = binascii.crc32((LAUNCHER + APP_NAME).encode("utf-8")) & 0xFFFFFFFF
+    crc_unsigned = unsigned_id
     crc_signed   = (crc_unsigned | 0x80000000) & 0xFFFFFFFF
     long_id      = (crc_unsigned << 32) | 0x02000000
     legacy_id    = (crc_unsigned & 0x7FFFFFFF)
@@ -13585,7 +13647,8 @@ try:
                 lc = vdf.load(fh)
             
             apps = lc.setdefault("UserLocalConfigStore", {}).setdefault("Software", {}).setdefault("Valve", {}).setdefault("Steam", {}).setdefault("apps", {})
-            app = apps.setdefault(str(shortcut_appid), {})
+            # localconfig.vdf uses the UNSIGNED 32-bit CRC ID as the key.
+            app = apps.setdefault(str(unsigned_id), {})
             app["logo_position"] = {
                 "pinned_position": "BottomLeft",
                 "width_pct": "36.44186046511628",
