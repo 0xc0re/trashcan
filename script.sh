@@ -392,7 +392,9 @@ get_wine_env_additions() {
   done
   
   # Proton 'files' layout check
+  local is_proton_layout="false"
   if [[ "${bin_dir}" == */files/bin ]]; then
+     is_proton_layout="true"
      local parent_root
      parent_root=$(readlink -f "$(dirname "${root_dir}")" 2>/dev/null || dirname "${root_dir}")
      for ld in "${lib_dirs[@]}"; do
@@ -402,8 +404,11 @@ get_wine_env_additions() {
      done
   fi
   
-  # Standard system fallbacks
-  libs="${libs}${libs:+:}/usr/lib64:/usr/lib:/lib64:/lib:/usr/lib/x86_64-linux-gnu"
+  # Standard system fallbacks — only add if not in a Proton layout to avoid
+  # mixing system libs with Proton's bundled runtime.
+  if [[ "${is_proton_layout}" == "false" ]]; then
+    libs="${libs}${libs:+:}/usr/lib64:/usr/lib:/lib64:/lib:/usr/lib/x86_64-linux-gnu"
+  fi
   
   printf "%s|%s|%s" "${bin_dir}" "${libs}" "${wine_path}"
 }
@@ -783,7 +788,8 @@ install_winetricks_multi() {
   for pkg in "$@"; do
     # First, check the winetricks log (most reliable, same logic winetricks uses).
     # We check case-insensitively and match the whole line to be sure.
-    if grep -iqE "^${pkg}$" "${wt_log}" 2>/dev/null; then
+    # Winetricks typically logs as "load_verb", so we check for both.
+    if grep -iqE "^(load_)?${pkg}$" "${wt_log}" 2>/dev/null; then
       ok_msg "${pkg} already installed (winetricks.log) — skipping."
     elif _verb_dll_present "${pkg}"; then
       ok_msg "${pkg} already installed (DLL present in prefix) — skipping."
@@ -844,7 +850,13 @@ install_winetricks_multi() {
     bin_add="${env_adds%%|*}"; temp="${env_adds#*|}"; 
     lib_add="${temp%%|*}"; loader_add="${env_adds##*|}"
   else
-    bin_add=$(dirname "${maint_wine}"); lib_add=""; loader_add="${maint_wine}"
+    # In Proton maintenance mode, maint_wine/maint_server are wrappers.
+    # bin_add is the wrapper directory. we leave lib_add empty as Proton
+    # handles its own libs, and we set loader_add to the ACTUAL wine binary
+    # so winetricks doesn't try to use a script as WINELOADER.
+    bin_add=$(dirname "${maint_wine}"); 
+    lib_add=""; 
+    loader_add="${real_wine_path}"
   fi
 
   # Start winetricks in the background so we can show a progress indicator.
@@ -1244,38 +1256,6 @@ if os.path.exists(localconfig_path):
                 vdf.dump(lc, fh, pretty=True)
     except Exception as exc:  # pylint: disable=broad-except
         print(f"{_WARN} Could not clean localconfig.vdf: {exc}")
-
-  # -- Steam grid artwork cleanup --------------------------------------------
-  local steam_root=""
-  for candidate in \
-    "${HOME}/.steam/steam" \
-    "${HOME}/.local/share/Steam" \
-    "${HOME}/.var/app/com.valvesoftware.Steam/.local/share/Steam"; do
-    if [[ -d "${candidate}" ]]; then
-      steam_root="${candidate}"
-      break
-    fi
-  done
-
-  if [[ -n "${steam_root}" ]]; then
-    local steam_userdata="${steam_root}/userdata"
-    if [[ -d "${steam_userdata}" ]]; then
-      local unsigned_id
-      unsigned_id=$(python3 - "${LAUNCHER_SCRIPT}" "${APP_NAME}" << 'PYEOF'
-import binascii, sys
-exe, name = sys.argv[1], sys.argv[2]
-crc = binascii.crc32((exe + name).encode("utf-8")) & 0xFFFFFFFF
-print((crc | 0x80000000) & 0xFFFFFFFF)
-PYEOF
-)
-      local user_dir
-      for user_dir in "${steam_userdata}"/*; do
-        [[ -d "${user_dir}/grid" ]] || continue
-        # Remove all potential artwork filenames.
-        rm -f "${user_dir}/grid/${unsigned_id}"* 2>/dev/null
-      done
-    fi
-  fi
 
 # -- config.vdf -------------------------------------------------------------
 config_path = os.path.join(STEAM_ROOT, "config", "config.vdf")
@@ -2330,8 +2310,8 @@ find_wine() {
         local can_run="false"
         local current_is_slr="false"
 
-        # If a 'proton' script is present, we assume it's an SLR-style build
-        # and we MUST use the script to run it reliably.
+        # If a 'proton' script is present, we assume it might be an SLR-style build
+        # or at least that we should prefer the script for execution.
         if [[ -f "${proton_script}" ]]; then
           current_is_slr="true"
         fi
@@ -2349,7 +2329,7 @@ find_wine() {
           can_run="true"
         elif [[ "${current_is_slr}" == "true" ]]; then
           # If it fails to run standalone but has a 'proton' script, it's 
-          # definitely an SLR build.
+          # definitely an SLR build that requires the runtime.
           can_run="true"
         fi
         rm -rf "${check_pfx}" 2>/dev/null || true
@@ -2638,8 +2618,8 @@ main() {
 
   # Use the detected Proton script if available (works for SLR and non-SLR).
   if [[ -n "${real_proton_script}" ]] && [[ -x "${real_proton_script}" ]]; then
-    # winetricks requires a single binary path for WINE. We create a small
-    # wrapper named 'wine' so winetricks works with any Proton build.
+    # winetricks requires a single binary path for WINE. We create small
+    # wrappers named 'wine' and 'wine64' so winetricks works with any Proton build.
     local wrapper_dir="${CLUCKERS_ROOT}/tools"
     mkdir -p "${wrapper_dir}"
     maint_wine="${wrapper_dir}/wine"
@@ -2650,10 +2630,21 @@ export STEAM_COMPAT_CLIENT_INSTALL_PATH="\${STEAM_COMPAT_CLIENT_INSTALL_PATH:-\$
 export STEAM_COMPAT_DATA_PATH="\${STEAM_COMPAT_DATA_PATH:-\$(dirname "\${WINEPREFIX}")}"
 exec "${real_proton_script}" run "\$@"
 EOF
-    chmod +x "${maint_wine}"
-    maint_server="${real_wineserver}"
+    cp "${maint_wine}" "${wrapper_dir}/wine64"
+    chmod +x "${maint_wine}" "${wrapper_dir}/wine64"
+
+    # Create a wineserver wrapper as well to ensure winetricks uses the correct one.
+    maint_server="${wrapper_dir}/wineserver"
+    cat << EOF > "${maint_server}"
+#!/usr/bin/env bash
+export STEAM_COMPAT_CLIENT_INSTALL_PATH="\${STEAM_COMPAT_CLIENT_INSTALL_PATH:-\${HOME}/.steam/steam}"
+export STEAM_COMPAT_DATA_PATH="\${STEAM_COMPAT_DATA_PATH:-\$(dirname "\${WINEPREFIX}")}"
+exec "${real_proton_script}" run "${real_wineserver}" "\$@"
+EOF
+    chmod +x "${maint_server}"
+
     is_proton_maint="true"
-    info_msg "Using Proton wrapper for maintenance: ${real_proton_script}"
+    info_msg "Using Proton wrappers for maintenance: ${real_proton_script}"
     local maint_ver
     maint_ver=$("${maint_wine}" --version 2>/dev/null || echo "unknown")
     info_msg "Maintenance Wine version: ${maint_ver}"
@@ -12960,13 +12951,16 @@ set -euo pipefail
 # Set PATH and LD_LIBRARY_PATH to include Wine's internal libraries and
 # binaries so it can find essential DLLs like kernel32.dll even when run
 # outside of Steam. We prepend them to any existing paths.
+# We skip this if using a Proton script, as Proton handles its own environment.
 $(
-  _env_adds="$(get_wine_env_additions "${real_wine_path}")"
-  _bin_add="${_env_adds%%|*}"; _temp="${_env_adds#*|}"
-  _lib_add="${_temp%%|*}"; _loader_add="${_env_adds##*|}"
-  printf 'export PATH="%s:${PATH}"\n' "${_bin_add}"
-  printf 'export LD_LIBRARY_PATH="%s${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"\n' "${_lib_add}"
-  printf 'export WINELOADER="%s"\n' "${_loader_add}"
+  if [[ -z "${real_proton_script}" ]]; then
+    _env_adds="$(get_wine_env_additions "${real_wine_path}")"
+    _bin_add="${_env_adds%%|*}"; _temp="${_env_adds#*|}"
+    _lib_add="${_temp%%|*}"; _loader_add="${_env_adds##*|}"
+    printf 'export PATH="%s:${PATH}"\n' "${_bin_add}"
+    printf 'export LD_LIBRARY_PATH="%s${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"\n' "${_lib_add}"
+    printf 'export WINELOADER="%s"\n' "${_loader_add}"
+  fi
 )
 
 export CLUCKERS_ROOT="${CLUCKERS_ROOT}"
