@@ -835,6 +835,13 @@ install_winetricks_multi() {
   # Start winetricks in the background so we can show a progress indicator.
   local wt_out
   wt_out=$(mktemp /tmp/wt_out.XXXXXX)
+  
+  # Snapshot the current log so we can count NEW installations.
+  local log_before
+  log_before=$(mktemp /tmp/wt_log_before.XXXXXX)
+  touch "${WINEPREFIX}/winetricks.log"
+  cp "${WINEPREFIX}/winetricks.log" "${log_before}"
+
   (
     env WINEPREFIX="${WINEPREFIX}" WINE="${maint_wine}" WINESERVER="${maint_server}" \
        PATH="${bin_add}:${PATH}" \
@@ -847,14 +854,43 @@ install_winetricks_multi() {
   
   local i=0
   local chars="/-\|"
+  local current_verb=""
+  local completed=0
+  local total=${#to_install[@]}
+
   while kill -0 "${wt_pid}" 2>/dev/null; do
     i=$(( (i+1) % 4 ))
-    printf "\r  %b[PROG]%b  Installing ${desc}... [%c]" "${BLUE}" "${NC}" "${chars:$i:1}"
+    
+    # Calculate progress based on how many new verbs appeared in the log.
+    completed=$(grep -Fxcf "${log_before}" "${WINEPREFIX}/winetricks.log" 2>/dev/null || echo 0)
+    # Clamp completed to total (grep might return more if log was modified externally).
+    (( completed > total )) && completed=${total}
+    
+    local percent=$(( completed * 100 / total ))
+    local bar_len=30
+    local filled=$(( completed * bar_len / total ))
+    local empty=$(( bar_len - filled ))
+    local bar_str empty_str
+    bar_str=$(printf "%${filled}s" | tr ' ' '#')
+    empty_str=$(printf "%${empty}s" | tr ' ' '-')
+    
+    # Try to find what's currently executing from the output.
+    current_verb=$(grep "Executing" "${wt_out}" | tail -n1 | sed 's/.*load_//; s/ .*//' | cut -c1-15)
+    [[ -z "${current_verb}" ]] && current_verb="initialising"
+
+    printf "\r  %b[PROG]%b  [%s%s] %d%% (%d/%d) %-15s [%c]" \
+      "${BLUE}" "${NC}" "${bar_str}" "${empty_str}" "${percent}" \
+      "${completed}" "${total}" "${current_verb}" "${chars:$i:1}"
+    
     sleep 0.5
   done
   wait "${wt_pid}"
   local wt_status=$?
   printf "\r"
+  # Clear the progress line.
+  printf "                                                                                \r"
+
+  rm -f "${log_before}"
 
   if [[ "${wt_status}" -eq 0 ]]; then
     ok_msg "${desc} installed successfully."
