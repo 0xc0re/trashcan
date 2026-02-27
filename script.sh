@@ -193,19 +193,15 @@ readonly STEAM_ASSET_BASE="https://shared.fastly.steamstatic.com/store_item_asse
 # High-quality assets from Steam for shortcuts and the Steam library.
 # We use the official client icon URL to avoid the blurriness caused by scaling
 # the wide store logo into a square icon.
-readonly STEAM_LOGO_URL="${STEAM_ASSET_BASE}/logo.png?t=1739811771"
+readonly STEAM_LOGO_URL="${STEAM_ASSET_BASE}/logo_2x.png?t=1739811771"
 readonly STEAM_GRID_URL="${STEAM_ASSET_BASE}/library_600x900_2x.jpg?t=1739811771"
 readonly STEAM_HERO_URL="${STEAM_ASSET_BASE}/library_hero_2x.jpg?t=1739811771"
-readonly STEAM_WIDE_URL="${STEAM_ASSET_BASE}/capsule_616x353.jpg?t=1739811771"
-readonly STEAM_HEADER_URL="${STEAM_ASSET_BASE}/header.jpg?t=1739811771"
-readonly STEAM_ICON_URL="https://cdn.akamai.steamstatic.com/steamcommunity/public/images/apps/813820/c59e5deabf96d228085fe122772251dfa526b9e2.jpg"
+readonly STEAM_ICON_URL="https://shared.fastly.steamstatic.com/community_assets/images/apps/813820/068664cf452a9f2388cf1ccf1f239fc967ff9629.jpg"
 
 readonly STEAM_ASSETS_DIR="${CLUCKERS_ROOT}/assets"
 readonly STEAM_LOGO_PATH="${STEAM_ASSETS_DIR}/logo.png"
 readonly STEAM_GRID_PATH="${STEAM_ASSETS_DIR}/grid.jpg"
 readonly STEAM_HERO_PATH="${STEAM_ASSETS_DIR}/hero.jpg"
-readonly STEAM_WIDE_PATH="${STEAM_ASSETS_DIR}/wide.jpg"
-readonly STEAM_HEADER_PATH="${STEAM_ASSETS_DIR}/header.jpg"
 readonly STEAM_ICON_PATH="${STEAM_ASSETS_DIR}/icon.png"
 
 # Directory where the two helper .exe / .dll binaries are stored after setup.
@@ -624,7 +620,7 @@ ensure_winetricks_fresh() {
   local wt_tmp
   wt_tmp=$(mktemp /tmp/winetricks.XXXXXX)
 
-  if curl -fsSL --max-time 30 "${wt_url}" -o "${wt_tmp}" 2>/dev/null; then
+  if curl ${CURL_SILENT}fSL --max-time 30 "${wt_url}" -o "${wt_tmp}" 2>/dev/null; then
     # Sanity-check: the downloaded file must look like a shell script.
     local first_line
     first_line=$(head -c 64 "${wt_tmp}" 2>/dev/null || true)
@@ -666,26 +662,6 @@ ensure_winetricks_fresh() {
     warn_msg "Could not download latest winetricks (no internet or GitHub unreachable)."
     WINETRICKS_BIN="${wt_path}"
   fi
-}
-
-# Installs icoutils (wrestool + icotool) for icon extraction from .exe files.
-#
-# icoutils is needed to extract the game icon from the .exe and convert it to
-# PNG for the .desktop shortcut. Without it the shortcut has no icon.
-#
-# Arguments:
-#   $1  Package manager name: "apt" | "pacman" | "dnf" | "zypper".
-#
-# Returns:
-#   0 on success; non-zero if the package manager command fails.
-install_icoutils() {
-  local -r pkg_mgr="$1"
-  case "${pkg_mgr}" in
-    apt)    sudo apt-get install -y icoutils ;;
-    pacman) sudo pacman -S --noconfirm icoutils ;;
-    dnf)    sudo dnf install -y icoutils ;;
-    zypper) sudo zypper install -y icoutils ;;
-  esac
 }
 
 # Installs one or more winetricks packages, skipping any already present.
@@ -971,7 +947,7 @@ install_winetricks_multi() {
 fetch_version_info() {
   info_msg "Querying update server for the latest game version..."
 
-  VERSION_INFO_JSON=$(curl -sf --max-time 15 "${UPDATER_URL}" 2>/dev/null || true)
+  VERSION_INFO_JSON=$(curl ${CURL_SILENT}f --max-time 15 "${UPDATER_URL}" 2>/dev/null || true)
 
   if [[ -z "${VERSION_INFO_JSON}" ]]; then
     return 1
@@ -1230,11 +1206,20 @@ if os.path.exists(localconfig_path):
               .get("Steam", {})
               .get("apps", {})
         )
+        changed = False
         if REALM_APPID in apps and "LaunchOptions" in apps[REALM_APPID]:
             del apps[REALM_APPID]["LaunchOptions"]
+            print(f"{_OK} Removed Realm Royale launch options.")
+            changed = True
+        
+        if str(shortcut_appid) in apps:
+            del apps[str(shortcut_appid)]
+            print(f"{_OK} Removed Cluckers Central localconfig settings.")
+            changed = True
+
+        if changed:
             with open(localconfig_path, "w", encoding="utf-8") as fh:
                 vdf.dump(lc, fh, pretty=True)
-            print(f"{_OK} Removed Realm Royale launch options.")
     except Exception as exc:  # pylint: disable=broad-except
         print(f"{_WARN} Could not clean localconfig.vdf: {exc}")
 
@@ -1319,7 +1304,7 @@ parallel_download() {
   # Probe the server: get Content-Length and confirm range-request support.
   # We need both to do a correct parallel split.
   local headers
-  headers=$(curl -sI -L "$url" 2>/dev/null)
+  headers=$(curl ${CURL_SILENT}IL "$url" 2>/dev/null)
   local size
   size=$(printf '%s' "$headers" \
     | grep -i '^content-length:' | tail -n1 | awk '{print $2}' | tr -d '\r' || true)
@@ -1342,7 +1327,7 @@ parallel_download() {
     # resume_flag is intentionally unquoted: when empty it must not expand
     # to an empty-string argument that would confuse curl's option parser.
     # shellcheck disable=SC2086
-    curl -L --progress-bar ${resume_flag} -o "${dest}.partial" "$url" || return 1
+    curl ${CURL_FLAGS} --progress-bar ${resume_flag} -o "${dest}.partial" "$url" || return 1
     mv "${dest}.partial" "$dest"
     return 0
   fi
@@ -1386,7 +1371,7 @@ parallel_download() {
     # append to the .part file. This two-step write ensures the .part file
     # only grows with fully received data, making resume safe.
     (
-      curl -s -L -f -r "${new_start}-${end}" -o "${part_file}.tmp" "$url" && \
+      curl ${CURL_FLAGS}f -r "${new_start}-${end}" -o "${part_file}.tmp" "$url" && \
       cat "${part_file}.tmp" >> "$part_file" && \
       rm -f "${part_file}.tmp"
     ) &
@@ -2291,14 +2276,20 @@ find_wine() {
         local can_run="false"
         local current_is_slr="false"
 
+        local check_out="/dev/null"
+        [[ "${VERBOSE_MODE:-false}" == "true" ]] && check_out="/dev/stderr"
+
         if env WINEPREFIX="${check_pfx}" \
            PATH="${bin_add}:${PATH}" \
            LD_LIBRARY_PATH="${lib_add}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
            WINELOADER="${loader_add}" \
            WINEDLLOVERRIDES="mscoree,mshtml=" \
            DISPLAY="" \
-           "${check_exe}" cmd.exe /c exit >/dev/null 2>&1; then
+           "${check_exe}" cmd.exe /c exit >"${check_out}" 2>&1; then
           can_run="true"
+          if [[ "${base}" == *-slr* || "${base}" == *SLR* ]]; then
+            current_is_slr="true"
+          fi
         elif [[ -n "${proton_script}" ]]; then
           # If it fails to run standalone but has a 'proton' script, it is
           # likely an SLR-managed Proton build. We trust it because the
@@ -2505,9 +2496,14 @@ main() {
   if [[ "${verbose}" == "true" ]]; then
     export WINEDEBUG=""
     export VERBOSE_MODE="true"
+    set -x
+    export CURL_FLAGS="-L"
+    export CURL_SILENT=""
   else
     export WINEDEBUG="-all"
     export VERBOSE_MODE="false"
+    export CURL_FLAGS="-sL"
+    export CURL_SILENT="-s"
   fi
 
   # --------------------------------------------------------------------------
@@ -12770,10 +12766,6 @@ XDLL_B64_EOF
   fi
 
     # --------------------------------------------------------------------------
-  # Step 7 — Extract desktop icon
-  #
-  # Extracts the Cluckers Central icon from the .exe so it appears correctly
-  # --------------------------------------------------------------------------
   # Step 7 — Downloading high-quality game assets
   #
   # Fetches high-quality icons, grid art, and hero images from Steam's CDN.
@@ -12788,66 +12780,17 @@ XDLL_B64_EOF
   local asset_downloaded="false"
   if command_exists curl; then
     info_msg "Downloading high-quality assets from Steam CDN..."
-    if curl -sfL -o "${STEAM_LOGO_PATH}" "${STEAM_LOGO_URL}" \
-       && curl -sfL -o "${STEAM_GRID_PATH}" "${STEAM_GRID_URL}" \
-       && curl -sfL -o "${STEAM_HERO_PATH}" "${STEAM_HERO_URL}" \
-       && curl -sfL -o "${STEAM_WIDE_PATH}" "${STEAM_WIDE_URL}" \
-       && curl -sfL -o "${STEAM_HEADER_PATH}" "${STEAM_HEADER_URL}" \
-       && curl -sfL -o "${STEAM_ICON_PATH}" "${STEAM_ICON_URL}"; then
-      # Use the high-quality logo.png for the desktop icon.
-      cp "${STEAM_ICON_PATH}" "${ICON_PATH}"
+    
+    # Download assets individually to be resilient.
+        curl ${CURL_FLAGS}f -o "${STEAM_LOGO_PATH}" "${STEAM_LOGO_URL}" || true
+        curl ${CURL_FLAGS}f -o "${STEAM_GRID_PATH}" "${STEAM_GRID_URL}" || true
+        curl ${CURL_FLAGS}f -o "${STEAM_HERO_PATH}" "${STEAM_HERO_URL}" || true
+    
+        if curl ${CURL_FLAGS}f -o "${STEAM_ICON_PATH}" "${STEAM_ICON_URL}"; then      cp "${STEAM_ICON_PATH}" "${ICON_PATH}"
       asset_downloaded="true"
-      ok_msg "High-quality Steam assets downloaded successfully."
+      ok_msg "High-quality Steam assets downloaded."
     else
-      warn_msg "Steam CDN assets unavailable — falling back to executable extraction."
-    fi
-  fi
-
-  if [[ "${asset_downloaded}" == "false" ]]; then
-    if [[ -f "${ICON_PATH}" ]]; then
-      ok_msg "Icon already exists — skipping extraction."
-    elif command_exists wrestool && command_exists icotool; then
-      local game_exe_for_icon="${GAME_DIR}/${GAME_EXE_REL}"
-      info_msg "Extracting icon from game executable..."
-      local ico_tmp
-      ico_tmp=$(mktemp --suffix=.ico)
-      if wrestool -x --type=14 -o "${ico_tmp}" "${game_exe_for_icon}" 2>/dev/null \
-          && icotool -x --index=1 -o "${ICON_PATH}" "${ico_tmp}" 2>/dev/null; then
-        ok_msg "Icon extracted to ${ICON_PATH}"
-      else
-        warn_msg "Icon extraction failed — using generic icon."
-      fi
-      rm -f "${ico_tmp}"
-    else
-      if [[ "${auto_mode}" == "false" ]]; then
-        printf "\n  icoutils is not installed (needed to extract the game icon).\n"
-        printf "  Install command for your distro:\n"
-        case "${pkg_mgr}" in
-          apt)    printf "    sudo apt install icoutils\n" ;;
-          pacman) printf "    sudo pacman -S icoutils\n" ;;
-          dnf)    printf "    sudo dnf install icoutils\n" ;;
-          zypper) printf "    sudo zypper install icoutils\n" ;;
-        esac
-        printf "  Install now? [y/N] "
-        local answer=""
-        read -r answer
-        if [[ "${answer}" =~ ^[Yy]$ ]]; then
-          install_icoutils "${pkg_mgr}"
-          local ico_tmp2
-          ico_tmp2=$(mktemp --suffix=.ico)
-          if wrestool -x --type=14 -o "${ico_tmp2}" "${game_exe_for_icon}" 2>/dev/null \
-            && icotool -x --index=1 -o "${ICON_PATH}" "${ico_tmp2}" 2>/dev/null; then
-            ok_msg "Icon extracted."
-          else
-            warn_msg "Extraction still failed — using generic icon."
-          fi
-          rm -f "${ico_tmp2}"
-        else
-          warn_msg "Skipping icon extraction — generic icon will be used."
-        fi
-      else
-        warn_msg "icoutils not installed — skipping icon extraction (auto mode)."
-      fi
+      warn_msg "Steam CDN icon unavailable."
     fi
   fi
 
@@ -13457,8 +13400,6 @@ EOF
       STEAM_GRID_PATH_ENV="${STEAM_GRID_PATH}" \
       STEAM_HERO_PATH_ENV="${STEAM_HERO_PATH}" \
       STEAM_LOGO_PATH_ENV="${STEAM_LOGO_PATH}" \
-      STEAM_WIDE_PATH_ENV="${STEAM_WIDE_PATH}" \
-      STEAM_HEADER_PATH_ENV="${STEAM_HEADER_PATH}" \
       STEAM_ICON_PATH_ENV="${STEAM_ICON_PATH}" \
       python3 - << 'PYEOF'
 """Adds Cluckers Central to Steam as a non-Steam shortcut."""
@@ -13477,8 +13418,6 @@ APP_NAME        = os.environ["APP_NAME_ENV"]
 STEAM_GRID      = os.environ["STEAM_GRID_PATH_ENV"]
 STEAM_HERO      = os.environ["STEAM_HERO_PATH_ENV"]
 STEAM_LOGO      = os.environ["STEAM_LOGO_PATH_ENV"]
-STEAM_WIDE      = os.environ["STEAM_WIDE_PATH_ENV"]
-STEAM_HEADER    = os.environ["STEAM_HEADER_PATH_ENV"]
 
 _OK   = "  [\033[0;32m OK \033[0m]"
 _WARN = "  [\033[1;33mWARN\033[0m]"
@@ -13553,16 +13492,12 @@ try:
     # Mapping of library art types to their respective files and suffixes.
     # Steam looks for files named <appid><suffix> in the grid/ directory.
     #   p      - Vertical grid (poster)
-    #   (none) - Horizontal grid (landscape)
     #   _hero  - Background hero image
     #   _logo  - Clear logo image
-    #   _header - Small header image
     art_map = {
         STEAM_GRID: ["p"],      # Vertical grid
-        STEAM_WIDE: [""],       # Horizontal grid (no suffix)
         STEAM_HERO: ["_hero"],  # Hero background
         STEAM_LOGO: ["_logo"],  # Clear logo
-        STEAM_HEADER: ["_header"], # Header image
     }
 
     # For non-Steam games, Steam uses various IDs for filenames in grid/.
@@ -13592,6 +13527,26 @@ try:
                         shutil.copy2(src, dest)
                     except Exception:
                         pass
+
+    # -- localconfig.vdf: set logo position ---------------------------------
+    localconfig_path = os.path.join(USER_CONFIG_DIR, "localconfig.vdf")
+    if os.path.exists(localconfig_path):
+        try:
+            with open(localconfig_path, encoding="utf-8", errors="replace") as fh:
+                lc = vdf.load(fh)
+            
+            apps = lc.setdefault("UserLocalConfigStore", {}).setdefault("Software", {}).setdefault("Valve", {}).setdefault("Steam", {}).setdefault("apps", {})
+            app = apps.setdefault(str(shortcut_appid), {})
+            app["logo_position"] = {
+                "pinned_position": "BottomLeft",
+                "width_pct": "36.44186046511628",
+                "height_pct": "100"
+            }
+            
+            with open(localconfig_path, "w", encoding="utf-8") as fh:
+                vdf.dump(lc, fh, pretty=True)
+        except Exception as exc:
+            print(f"{_WARN} Could not update logo position in localconfig.vdf: {exc}")
 
     print(f"{_OK} Added Cluckers Central to Steam library (including artwork).")
 except Exception as exc:  # pylint: disable=broad-except
