@@ -2639,20 +2639,24 @@ main() {
   # Use the detected Proton script if available (works for SLR and non-SLR).
   if [[ -n "${real_proton_script}" ]] && [[ -x "${real_proton_script}" ]]; then
     # winetricks requires a single binary path for WINE. We create a small
-    # wrapper that calls 'proton run' so winetricks works with any Proton build.
+    # wrapper named 'wine' so winetricks works with any Proton build.
     local wrapper_dir="${CLUCKERS_ROOT}/tools"
     mkdir -p "${wrapper_dir}"
-    maint_wine="${wrapper_dir}/wine_wrapper"
+    maint_wine="${wrapper_dir}/wine"
     cat << EOF > "${maint_wine}"
 #!/usr/bin/env bash
 export STEAM_COMPAT_CLIENT_INSTALL_PATH="\${STEAM_COMPAT_CLIENT_INSTALL_PATH:-\${HOME}/.steam/steam}"
-export STEAM_COMPAT_DATA_PATH="\${STEAM_COMPAT_DATA_PATH:-\${WINEPREFIX}}"
-"${real_proton_script}" run "\$@"
+# Proton expects STEAM_COMPAT_DATA_PATH to be the parent of the 'pfx' folder.
+export STEAM_COMPAT_DATA_PATH="\${STEAM_COMPAT_DATA_PATH:-\$(dirname "\${WINEPREFIX}")}"
+exec "${real_proton_script}" run "\$@"
 EOF
     chmod +x "${maint_wine}"
     maint_server="${real_wineserver}"
     is_proton_maint="true"
     info_msg "Using Proton wrapper for maintenance: ${real_proton_script}"
+    local maint_ver
+    maint_ver=$("${maint_wine}" --version 2>/dev/null || echo "unknown")
+    info_msg "Maintenance Wine version: ${maint_ver}"
   elif [[ -n "${real_wine_path}" ]] && [[ "${_is_slr}" == "false" ]]; then
     # The detected Wine is functional (e.g. GE-Proton or system Wine).
     maint_wine="${real_wine_path}"
@@ -2875,14 +2879,17 @@ EOF
       info_msg "Copying Proton prefix template from ${proton_template}..."
       cp -r "${proton_template}"/* "${WINEPREFIX}/"
     else
-      # If we are about to use Proton, ensure there are no conflicting real files
+      # If we are using Proton, ensure there are no conflicting real files
       # where Proton expects to place symlinks (e.g. iexplore.exe).
+      # Proton will crash with FileExistsError if it can't create these symlinks.
       if [[ "${_is_proton}" == "true" ]]; then
-        local ie_path="${WINEPREFIX}/drive_c/Program Files/Internet Explorer/iexplore.exe"
-        if [[ -f "${ie_path}" && ! -L "${ie_path}" ]]; then
-          info_msg "Removing conflicting iexplore.exe to allow Proton symlinking..."
-          rm -f "${ie_path}"
-        fi
+        info_msg "Cleaning up existing prefix for Proton upgrade..."
+        # Remove real files that should be symlinks in a Proton prefix.
+        find "${WINEPREFIX}/drive_c" -type f \( \
+          -path "*/Internet Explorer/iexplore.exe" -o \
+          -path "*/system32/notepad.exe" -o \
+          -path "*/system32/winhlp32.exe" \
+        \) -not -type l -delete 2>/dev/null || true
       fi
 
       # Suppress Wine GUI dialogs during prefix initialisation:
@@ -13620,10 +13627,17 @@ try:
     crc_signed   = (crc_unsigned | 0x80000000) & 0xFFFFFFFF
     long_id      = (crc_unsigned << 32) | 0x02000000
     legacy_id    = (crc_unsigned & 0x7FFFFFFF)
+    
+    # Extra: raw CRC without any bits set by our calculation
+    crc_raw = binascii.crc32((LAUNCHER + APP_NAME).encode("utf-8")) & 0xFFFFFFFF
+    long_id_raw = (crc_raw << 32) | 0x02000000
 
     # We try ALL potential IDs to ensure Steam finds the artwork regardless of
     # its internal version or ID calculation quirk.
-    potential_ids = [str(crc_unsigned), str(crc_signed), str(long_id), str(legacy_id)]
+    potential_ids = [
+        str(crc_unsigned), str(crc_signed), str(long_id), str(legacy_id),
+        str(crc_raw), str(long_id_raw)
+    ]
 
     for src, suffixes in art_map.items():
         if not os.path.exists(src):
