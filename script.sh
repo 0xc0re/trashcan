@@ -353,15 +353,21 @@ is_pkg_installed() {
 #   Prints "BIN_DIR|LD_LIB_ADD|LOADER_PATH" to stdout.
 get_wine_env_additions() {
   local wine_path="$1"
-  local bin_dir
-  local root_dir
+  [[ -z "${wine_path}" ]] && return 1
   
   if [[ "${wine_path}" != /* ]]; then
     wine_path=$(command -v "${wine_path}" 2>/dev/null || echo "${wine_path}")
   fi
   
+  local bin_dir root_dir
   bin_dir=$(readlink -f "$(dirname "${wine_path}")" 2>/dev/null || dirname "${wine_path}")
   root_dir=$(readlink -f "$(dirname "${bin_dir}")" 2>/dev/null || dirname "${bin_dir}")
+  
+  # If it doesn't look like a standard /bin layout, we can't reliably guess libs.
+  if [[ "$(basename "${bin_dir}")" != "bin" ]]; then
+    printf '%s||%s' "${bin_dir}" "${wine_path}"
+    return 0
+  fi
   
   local libs=""
   local ld
@@ -772,9 +778,8 @@ install_winetricks_multi() {
   local wt_log="${WINEPREFIX}/winetricks.log"
   for pkg in "$@"; do
     # First, check the winetricks log (most reliable, same logic winetricks uses).
-    # If not found there, check whether the DLL is already on disk — this catches
-    # packages that Proton installed before this script was ever run.
-    if grep -qE "^${pkg}$" "${wt_log}" 2>/dev/null; then
+    # We check case-insensitively and match the whole line to be sure.
+    if grep -iqE "^${pkg}$" "${wt_log}" 2>/dev/null; then
       ok_msg "${pkg} already installed (winetricks.log) — skipping."
     elif _verb_dll_present "${pkg}"; then
       ok_msg "${pkg} already installed (DLL present in prefix) — skipping."
@@ -2283,6 +2288,12 @@ find_wine() {
         local can_run="false"
         local current_is_slr="false"
 
+        # If a 'proton' script is present, we assume it's an SLR-style build
+        # and we MUST use the script to run it reliably.
+        if [[ -f "${proton_script}" ]]; then
+          current_is_slr="true"
+        fi
+
         local check_out="/dev/null"
         [[ "${VERBOSE_MODE:-false}" == "true" ]] && check_out="/dev/stderr"
 
@@ -2294,20 +2305,15 @@ find_wine() {
            DISPLAY="" \
            "${check_exe}" cmd.exe /c exit >"${check_out}" 2>&1; then
           can_run="true"
-          if [[ "${base}" == *-slr* || "${base}" == *SLR* ]]; then
-            current_is_slr="true"
-          fi
-        elif [[ -n "${proton_script}" ]]; then
-          # If it fails to run standalone but has a 'proton' script, it is
-          # likely an SLR-managed Proton build. We trust it because the
-          # launcher script will use the 'proton' script to run it.
+        elif [[ "${current_is_slr}" == "true" ]]; then
+          # If it fails to run standalone but has a 'proton' script, it's 
+          # definitely an SLR build.
           can_run="true"
-          current_is_slr="true"
         fi
         rm -rf "${check_pfx}" 2>/dev/null || true
 
         if [[ "${can_run}" == "true" ]]; then
-          # Try to extract version for GE-Proton (e.g., GE-Proton9-20)
+          # Prioritize GE-Proton by parsing its version.
           if [[ "${base}" =~ GE-Proton([0-9]+)-([0-9]+) ]]; then
             major="${BASH_REMATCH[1]}"
             minor="${BASH_REMATCH[2]}"
@@ -2318,7 +2324,9 @@ find_wine() {
               newest_script="${proton_script}"
               newest_is_slr="${current_is_slr}"
             fi
-          elif [[ -z "${newest_proton}" ]]; then
+          elif [[ -z "${newest_proton}" ]] || [[ "${current_is_slr}" == "true" && "${newest_is_slr}" == "false" ]]; then
+            # Prefer any Proton/SLR build over a basic standalone Wine if we
+            # haven't found a GE-Proton yet.
             newest_proton="${check_exe}"
             newest_script="${proton_script}"
             newest_is_slr="${current_is_slr}"
@@ -2334,20 +2342,18 @@ find_wine() {
     _out_proton_script="${newest_script}"
     _out_is_slr="${newest_is_slr}"
 
-    # Extract a meaningful tool name (e.g., GE-Proton9-20 or proton-cachyos)
+    # Extract tool name for info message.
     local tool_dir
     tool_dir=$(dirname "$(dirname "${newest_proton}")")
-    if [[ "$(basename "${tool_dir}")" == "bin" ]]; then
-        tool_dir=$(dirname "${tool_dir}")
-    fi
-    if [[ "$(basename "${tool_dir}")" == "files" ]]; then
-        tool_dir=$(dirname "${tool_dir}")
-    fi
+    [[ "$(basename "${tool_dir}")" == "bin" || "$(basename "${tool_dir}")" == "files" ]] && tool_dir=$(dirname "${tool_dir}")
     _out_tool_name=$(basename "${tool_dir}")
 
     # Set the wineserver path associated with this Wine binary
     _out_server="$(dirname "${newest_proton}")/wineserver"
     [[ ! -x "${_out_server}" ]] && _out_server="wineserver"
+
+    info_msg "Detected Proton build: ${_out_tool_name} (SLR: ${_out_is_slr})"
+    [[ -n "${_out_proton_script}" ]] && info_msg "Proton script: ${_out_proton_script}"
     return 0
   fi
 
