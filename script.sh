@@ -132,7 +132,7 @@ GAME_VERSION="${GAME_VERSION:-auto}"
 # because SteamOS runs its own Gamescope session automatically.
 # --force-grab-cursor is included because it fixes the mouse bugging out
 # (stuck in a corner or invisible) on many Desktop Environments and Distros.
-GAMESCOPE_ARGS="gamescope -f --force-grab-cursor -W 1920 -H 1080 -r 240 --adaptive-sync --borderless"
+GAMESCOPE_ARGS="gamescope --force-grab-cursor -W 1920 -H 1080 -r 240 --adaptive-sync --borderless"
 
 # ==============================================================================
 #  Constants  (readonly — cannot be changed at runtime)
@@ -303,6 +303,28 @@ command_exists() { command -v "$1" > /dev/null 2>&1; }
 # ==============================================================================
 #  System dependency helpers
 # ==============================================================================
+
+# Returns the LD_LIBRARY_PATH required to find a Wine binary's internal DLLs.
+#
+# Arguments:
+#   $1 - wine_path: Absolute path to the wine or wine64 binary.
+#
+# Returns:
+#   Prints the required LD_LIBRARY_PATH to stdout.
+get_wine_lib_path() {
+  local wine_path="$1"
+  local bin_dir
+  local root_dir
+  bin_dir="$(dirname "${wine_path}")"
+  root_dir="$(dirname "${bin_dir}")"
+  if [[ "$(basename "${bin_dir}")" == "bin" ]]; then
+    # Standard layout: bin/ next to lib64/ and lib/
+    printf "%s/lib64:%s/lib" "${root_dir}" "${root_dir}"
+  elif [[ "$(basename "${bin_dir}")" == "files/bin" ]]; then
+    # Proton layout: files/bin/ next to files/lib64/ and files/lib/
+    printf "%s/lib64:%s/lib" "${root_dir}" "${root_dir}"
+  fi
+}
 
 # Returns 0 if the local game matches the version info on the server.
 # Replicates the version check in:
@@ -729,8 +751,15 @@ install_winetricks_multi() {
   # current shell. Inline VAR=value syntax (VAR=x cmd) is rejected by bash
   # when VAR is declared readonly, even though it would only be a temporary
   # assignment for the child process. env sidesteps this restriction entirely.
+  #
+  # LD_LIBRARY_PATH is set using get_wine_lib_path() so winetricks can find
+  # Wine's internal DLLs (like kernel32.dll) when using a custom Wine build.
+  #
   # shellcheck disable=SC2086
+  local lib_path
+  lib_path=$(get_wine_lib_path "${maint_wine}")
   if env WINEPREFIX="${WINEPREFIX}" WINE="${maint_wine}" WINESERVER="${maint_server}" \
+     LD_LIBRARY_PATH="${lib_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
      DISPLAY="" WINEDLLOVERRIDES="mscoree,mshtml=" \
      winetricks ${wt_flags} "${to_install[@]}"; then
     ok_msg "${desc} installed successfully."
@@ -2522,12 +2551,16 @@ main() {
       #   WINEDLLOVERRIDES=mscoree,mshtml=  — skip .NET and IE installers
       # env is used instead of inline VAR=value syntax because WINEPREFIX is
       # declared readonly and bash rejects inline re-assignment of readonly vars.
+      local lib_path
+      lib_path=$(get_wine_lib_path "${maint_wine}")
       env WINEPREFIX="${WINEPREFIX}" DISPLAY="" \
+        LD_LIBRARY_PATH="${lib_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
         WINEDLLOVERRIDES="mscoree,mshtml=" \
         WINE="${maint_wine}" WINESERVER="${maint_server}" \
         "${maint_wine}" wineboot --init || true
       # Stabilize the prefix — wait for all Wine children to exit cleanly.
       env WINEPREFIX="${WINEPREFIX}" WINESERVER="${maint_server}" \
+        LD_LIBRARY_PATH="${lib_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
         "${maint_server}" -w || true
     fi
     ok_msg "Wine prefix created."
@@ -12602,15 +12635,8 @@ set -euo pipefail
 # Set LD_LIBRARY_PATH to include Wine's internal libraries so it can find
 # essential DLLs like kernel32.dll even when run outside of Steam.
 # We prepend them to any existing LD_LIBRARY_PATH.
-_wine_bin_dir="$(dirname "${real_wine_path}")"
-_wine_root_dir="$(dirname "${_wine_bin_dir}")"
-if [[ "$(basename "${_wine_bin_dir}")" == "bin" ]]; then
-  # Standard layout: bin/ is next to lib64/ and lib/
-  export LD_LIBRARY_PATH="${_wine_root_dir}/lib64:${_wine_root_dir}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-elif [[ "$(basename "${_wine_bin_dir}")" == "files/bin" ]]; then
-  # Proton layout: files/bin/ is next to files/lib64/ and files/lib/
-  export LD_LIBRARY_PATH="${_wine_root_dir}/lib64:${_wine_root_dir}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-fi
+_lib_path="$(get_wine_lib_path "${real_wine_path}")"
+export LD_LIBRARY_PATH="\${_lib_path}\${LD_LIBRARY_PATH:+:\${LD_LIBRARY_PATH}}"
 
 export WINEPREFIX="${WINEPREFIX}"
 export WINEARCH="win64"
