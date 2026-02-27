@@ -400,6 +400,59 @@ install_icoutils() {
   esac
 }
 
+# Installs multiple winetricks packages in one go if they are not already installed.
+#
+# Arguments:
+#   $1 - Human-readable description for progress output.
+#   $2 - Maintenance Wine path.
+#   $3 - Maintenance Wineserver path.
+#   $4 - is_auto mode flag.
+#   $@ - winetricks package identifiers (e.g. "vcrun2010 vcrun2012").
+install_winetricks_multi() {
+  local -r desc="$1"; shift
+  local -r maint_wine="$1"; shift
+  local -r maint_server="$1"; shift
+  local -r is_auto="$1"; shift
+  local -r log="${WINEPREFIX}/winetricks.log"
+  local -a to_install=()
+  local pkg
+
+  for pkg in "$@"; do
+    if ! [[ -f "${log}" ]] || ! grep -qw "${pkg}" "${log}" 2>/dev/null; then
+      to_install+=("${pkg}")
+    fi
+  done
+
+  if [[ ${#to_install[@]} -eq 0 ]]; then
+    ok_msg "${desc} are already installed."
+    return 0
+  fi
+
+  info_msg "Installing ${desc} (${to_install[*]})..."
+  # Ensure no orphaned wineservers are running before winetricks.
+  env WINEPREFIX="${WINEPREFIX}" "${maint_server}" -k 2>/dev/null || true
+  
+  local wt_flags=""
+  if [[ "${is_auto}" == "true" && "${VERBOSE_MODE:-false}" != "true" ]]; then
+    wt_flags="-q"
+  fi
+
+  # Run winetricks for all missing packages
+  if WINE="${maint_wine}" WINESERVER="${maint_server}" \
+     winetricks ${wt_flags} "${to_install[@]}"; then
+    ok_msg "${desc} installed."
+    # Log each successful installation.
+    for pkg in "${to_install[@]}"; do
+      echo "${pkg}" >> "${log}"
+    done
+  else
+    warn_msg "Installation of some components in '${desc}' failed — continuing anyway."
+  fi
+
+  # Cleanup after winetricks.
+  env WINEPREFIX="${WINEPREFIX}" "${maint_server}" -k 2>/dev/null || true
+}
+
 # Installs a winetricks package if not already recorded in the winetricks log.
 #
 # Globals:
@@ -2031,11 +2084,8 @@ main() {
   env WINEPREFIX="${WINEPREFIX}" "${maint_server}" -k 2>/dev/null || true
 
   # Packages match verify.go RepairInstructions exactly:
-  install_winetricks_pkg "vcrun2010"  "Visual C++ 2010 Redistributable"  "${maint_wine}" "${maint_server}" "${auto_mode}"
-  install_winetricks_pkg "vcrun2012"  "Visual C++ 2012 Redistributable"  "${maint_wine}" "${maint_server}" "${auto_mode}"
-  install_winetricks_pkg "vcrun2019"  "Visual C++ 2019 Redistributable"  "${maint_wine}" "${maint_server}" "${auto_mode}"
-  install_winetricks_pkg "dxvk"       "DXVK (Vulkan-backed DirectX 11)" "${maint_wine}" "${maint_server}" "${auto_mode}"
-  install_winetricks_pkg "d3dx11_43"  "DirectX 11 helper DLL (d3dx11_43.dll)" "${maint_wine}" "${maint_server}" "${auto_mode}"
+  install_winetricks_multi "Windows runtime libraries" "${maint_wine}" "${maint_server}" "${auto_mode}" \
+    "vcrun2010" "vcrun2012" "vcrun2019" "dxvk" "d3dx11_43"
 
   # --------------------------------------------------------------------------
   # Step 5 — Download and verify game files
