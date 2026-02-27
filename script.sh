@@ -251,60 +251,7 @@ command_exists() { command -v "$1" > /dev/null 2>&1; }
 
 # Installs missing system packages using the distro's package manager.
 #
-# Returns 0 if the local game matches the version info on the server.
-#
-# Arguments:
-#   $1 - dat_path_rel: Relative path to GameVersion.dat.
-#   $2 - dat_blake3: Expected BLAKE3 hash from the server.
-is_game_up_to_date() {
-  local dat_path_rel="$1"
-  local dat_blake3="$2"
-
-  local local_game_exe="${GAME_DIR}/${GAME_EXE_REL}"
-  if [[ ! -f "${local_game_exe}" ]]; then
-    return 1
-  fi
-
-  if [[ -z "${dat_path_rel}" || -z "${dat_blake3}" ]]; then
-    ok_msg "Game files found (version info missing; deep integrity check skipped)."
-    return 0
-  fi
-
-  local local_dat="${GAME_DIR}/${dat_path_rel}"
-  if [[ ! -f "${local_dat}" ]]; then
-    ok_msg "Game files found but version data is missing — assuming update needed."
-    return 1
-  fi
-
-  info_msg "Checking local GameVersion.dat (${local_dat})..."
-  local local_dat_hash
-  local_dat_hash=$(python3 - "${local_dat}" << 'DATBLAKE3EOF'
-import sys
-try:
-    from blake3 import blake3 as b3
-    h = b3()
-    with open(sys.argv[1], "rb") as f:
-        h.update(f.read())
-    print(h.hexdigest())
-except ImportError:
-    print("skip")
-DATBLAKE3EOF
-  ) || local_dat_hash="skip"
-
-  if [[ "${local_dat_hash}" == "skip" ]]; then
-    ok_msg "Game files found, but deep integrity verification was skipped (blake3 missing)."
-    return 0
-  fi
-
-  if [[ "${local_dat_hash}" == "${dat_blake3}" ]]; then
-    ok_msg "Game version verified successfully (BLAKE3 match)."
-    return 0
-  fi
-
-  return 1
-}
-
-# Checks for: wine winetricks curl wget python3 unzip sha256sum cabextract.
+# Checks for: wine winetricks curl wget python3 unzip sha256sum.
 # Installs only what is absent. Supports apt, pacman, dnf, zypper.
 #
 # Arguments:
@@ -316,7 +263,7 @@ install_sys_deps() {
   local tool
 
   # Use pip3 as the check for pip.
-  for tool in wine winetricks curl wget python3 unzip sha256sum cabextract "$@"; do
+  for tool in wine winetricks curl wget python3 unzip sha256sum "$@"; do
     command_exists "${tool}" || to_install+=("${tool}")
   done
   
@@ -376,13 +323,9 @@ install_icoutils() {
 # Arguments:
 #   $1 - winetricks package identifier (e.g. "vcrun2022").
 #   $2 - Human-readable description for progress output.
-#   $3 - (Optional) Path to the Wine binary to use.
-#   $4 - (Optional) Path to the Wineserver binary to use.
 install_winetricks_pkg() {
   local -r pkg="$1"
   local -r desc="$2"
-  local -r wine_path="${3:-wine}"
-  local -r wineserver_path="${4:-wineserver}"
   local -r log="${WINEPREFIX}/winetricks.log"
 
   if [[ -f "${log}" ]] && grep -qw "${pkg}" "${log}" 2>/dev/null; then
@@ -391,19 +334,11 @@ install_winetricks_pkg() {
   fi
 
   info_msg "Installing ${desc}..."
-  # Clean up any hanging servers before starting winetricks.
-  WINEPREFIX="${WINEPREFIX}" "${wineserver_path}" -k 2>/dev/null || true
-
-  # Explicitly set WINE and WINESERVER to avoid hangs due to version mismatch.
-  # Suppress debug output to keep the log clean and avoid UI freezes.
-  if WINE="${wine_path}" WINESERVER="${wineserver_path}" WINEDEBUG="-all" winetricks -q "${pkg}"; then
+  if winetricks -q "${pkg}"; then
     ok_msg "${desc} installed."
   else
     warn_msg "${pkg} install failed — continuing anyway."
   fi
-  
-  # Clean up again after winetricks to ensure next step starts fresh.
-  WINEPREFIX="${WINEPREFIX}" "${wineserver_path}" -k 2>/dev/null || true
 }
 
 # ==============================================================================
@@ -729,14 +664,14 @@ parallel_download() {
 
   # If size is unknown or not a number, fallback to standard single-threaded curl
   if [[ -z "$size" || ! "$size" =~ ^[0-9]+$ ]]; then
-    local -a curl_args=("-L" "--progress-bar")
+    local resume_flag=""
     if [[ -f "${dest}.partial" ]]; then
       local partial_size
       partial_size=$(stat -c%s "${dest}.partial" 2>/dev/null || echo 0)
       info_msg "Resuming partial download (${partial_size} bytes)..."
-      curl_args+=("-C" "-")
+      resume_flag="-C -"
     fi
-    curl "${curl_args[@]}" -o "${dest}.partial" "$url" || return 1
+    curl -L --progress-bar ${resume_flag} -o "${dest}.partial" "$url" || return 1
     mv "${dest}.partial" "$dest"
     return 0
   fi
@@ -792,8 +727,7 @@ parallel_download() {
         fi
         current_size=$(( current_size + ps ))
         if [[ -f "${dest}.part${i}.tmp" ]]; then
-          local tmps
-          tmps=$(stat -c%s "${dest}.part${i}.tmp" 2>/dev/null || echo 0)
+          local tmps=$(stat -c%s "${dest}.part${i}.tmp" 2>/dev/null || echo 0)
           current_size=$(( current_size + tmps ))
         fi
       done
@@ -802,16 +736,14 @@ parallel_download() {
       local bar_length=40
       local filled=$(( percent * bar_length / 100 ))
       local empty=$(( bar_length - filled ))
-      local bar_str
-      bar_str=$(printf "%${filled}s" | tr ' ' '#')
-      local empty_str
-      empty_str=$(printf "%${empty}s" | tr ' ' '-')
+      local bar_str=$(printf "%${filled}s" | tr ' ' '#')
+      local empty_str=$(printf "%${empty}s" | tr ' ' '-')
       
       printf "\r  [INFO]  [%s%s] %d%% (%d / %d MB)   " "${bar_str}" "${empty_str}" "${percent}" "$((current_size / 1048576))" "$((size / 1048576))"
       
       local all_done=true
       for pid in "${pids[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
+        if kill -0 $pid 2>/dev/null; then
           all_done=false
           break
         fi
@@ -827,7 +759,7 @@ parallel_download() {
     # Wait and capture exit codes
     local failed=false
     for pid in "${pids[@]}"; do
-      wait "$pid" || failed=true
+      wait $pid || failed=true
     done
     
     if $failed; then
@@ -942,9 +874,36 @@ run_update() {
   # Mirrors NeedsUpdate() in internal/game/version.go:
   #   Read local GameVersion.dat, compute BLAKE3, compare to server value.
   # Falls back to "needs update" if the file is absent or unreadable.
-  if is_game_up_to_date "${dat_path_rel}" "${dat_blake3}"; then
+  local needs_update="true"
+  if [[ -n "${dat_path_rel}" ]] && [[ -n "${dat_blake3}" ]]; then
+    local local_dat="${GAME_DIR}/${dat_path_rel}"
+    if [[ -f "${local_dat}" ]]; then
+      info_msg "Checking local GameVersion.dat (${local_dat})..."
+      local local_dat_hash
+      local_dat_hash=$(python3 - "${local_dat}" << 'DATBLAKE3EOF'
+import sys
+try:
+    from blake3 import blake3 as b3
+    h = b3()
+    with open(sys.argv[1], "rb") as f:
+        h.update(f.read())
+    print(h.hexdigest())
+except ImportError:
+    print("skip")
+DATBLAKE3EOF
+      ) || local_dat_hash="skip"
+
+      if [[ "${local_dat_hash}" == "skip" ]]; then
+        warn_msg "blake3 module not available — cannot compare GameVersion.dat hashes."
+        warn_msg "Assuming update is needed."
+      elif [[ "${local_dat_hash}" == "${dat_blake3}" ]]; then
+        needs_update="false"
+      fi
+    fi
+  fi
+
+  if [[ "${needs_update}" == "false" ]]; then
     ok_msg "Game is already up to date (${target_version})."
-    ok_msg "Game version verified successfully."
     return 0
   fi
 
@@ -985,15 +944,15 @@ ZIPBLAKE3EOF
     ) || actual_blake3="skip"
 
     if [[ "${actual_blake3}" == "skip" ]]; then
-      ok_msg "Game download complete. (Integrity verification skipped — blake3 Python module not installed)."
-      info_msg "To enable automatic file verification in the future, you can run: pip install blake3"
+      warn_msg "blake3 module not installed — skipping zip BLAKE3 verification."
+      warn_msg "Install with: pip install blake3"
     elif [[ "${actual_blake3}" != "${zip_blake3}" ]]; then
       rm -f "${zip_path}"
       error_exit "BLAKE3 mismatch — zip may be corrupt. Re-run --update to retry.
   Expected: ${zip_blake3}
   Got:      ${actual_blake3}"
     else
-      ok_msg "Game download complete and verified successfully (BLAKE3)."
+      ok_msg "BLAKE3 integrity verified."
     fi
   fi
 
@@ -1522,17 +1481,14 @@ DECK_LAYOUT_EOF
 #   $1 - variable name to store the wine binary path
 #   $2 - variable name to store the is_proton boolean ("true"/"false")
 #   $3 - variable name to store the proton tool name
-#   $4 - variable name to store the wineserver binary path
 find_wine() {
   local -n _out_path=$1
   local -n _out_is_proton=$2
   local -n _out_tool_name=$3
-  local -n _out_server=$4
 
   _out_path=""
   _out_is_proton="false"
   _out_tool_name="proton"
-  _out_server="wineserver"
 
   local search_dirs=(
     "/usr/share/steam/compatibilitytools.d"
@@ -1564,16 +1520,16 @@ find_wine() {
     if [[ ! -d "${d}" ]]; then continue; fi
 
     # 1. Check direct subdirectory (e.g., /opt/proton-cachyos/files/bin/wine64)
-    local direct_p=""
-    if [[ -f "${d}/files/bin/wine64" ]]; then
-        direct_p="${d}/files/bin/wine64"
-    elif [[ -f "${d}/bin/wine64" ]]; then
-        direct_p="${d}/bin/wine64"
-    fi
-
-    if [[ -n "${direct_p}" ]]; then
-        if [[ -z "${newest_proton}" ]]; then
-            newest_proton="${direct_p}"
+    # or Lutris runners (e.g., .../lutris-ge-6.16-x86_64/bin/wine64)
+    if [[ ! "${d}" == *"SteamLinuxRuntime"* ]] && [[ ! "${d}" == *"SLR"* ]]; then
+        if [[ -f "${d}/files/bin/wine64" ]]; then
+            if [[ -z "${newest_proton}" ]]; then
+                newest_proton="${d}/files/bin/wine64"
+            fi
+        elif [[ -f "${d}/bin/wine64" ]]; then
+            if [[ -z "${newest_proton}" ]]; then
+                newest_proton="${d}/bin/wine64"
+            fi
         fi
     fi
 
@@ -1581,15 +1537,10 @@ find_wine() {
     # Use a broad glob to find GE-Proton, proton-cachyos, lutris-ge, etc.
     for p in "${d}"/GE-Proton* "${d}"/proton-cachyos* "${d}"/proton-ge-custom "${d}"/lutris-* "${d}"/wine-ge-*; do
       [[ -e "${p}" ]] || continue
+      [[ "${p}" == *"SteamLinuxRuntime"* ]] && continue
+      [[ "${p}" == *"SLR"* ]] && continue
       
-      local wine_bin=""
       if [[ -f "${p}/files/bin/wine64" ]]; then
-        wine_bin="${p}/files/bin/wine64"
-      elif [[ -f "${p}/bin/wine64" ]]; then
-        wine_bin="${p}/bin/wine64"
-      fi
-
-      if [[ -n "${wine_bin}" ]]; then
         base=$(basename "${p}")
         # Try to extract version for GE-Proton (e.g., GE-Proton9-20)
         if [[ "${base}" =~ GE-Proton([0-9]+)-([0-9]+) ]]; then
@@ -1598,11 +1549,16 @@ find_wine() {
           ver=$(printf "%05d-%05d" "${major}" "${minor}")
           if [[ "${ver}" > "${newest_version}" || -z "${newest_proton}" ]]; then
             newest_version="${ver}"
-            newest_proton="${wine_bin}"
+            newest_proton="${p}/files/bin/wine64"
           fi
         elif [[ -z "${newest_proton}" ]]; then
           # Fallback for other Protons without standard GE versioning
-          newest_proton="${wine_bin}"
+          newest_proton="${p}/files/bin/wine64"
+        fi
+      elif [[ -f "${p}/bin/wine64" ]]; then
+        # Handle versions that don't use 'files' subfolder (e.g. some Lutris/Bottles runners)
+        if [[ -z "${newest_proton}" ]]; then
+          newest_proton="${p}/bin/wine64"
         fi
       fi
     done
@@ -1623,8 +1579,6 @@ find_wine() {
         tool_dir=$(dirname "${tool_dir}")
     fi
     _out_tool_name=$(basename "${tool_dir}")
-    _out_server="$(dirname "${newest_proton}")/wineserver"
-    [[ ! -x "${_out_server}" ]] && _out_server="wineserver"
     return 0
   fi
 
@@ -1651,8 +1605,6 @@ find_wine() {
     if [[ -n "${path}" ]] && [[ -x "${path}" ]]; then
       _out_path="${path}"
       _out_tool_name="wine"
-      _out_server="$(dirname "${path}")/wineserver"
-      [[ ! -x "${_out_server}" ]] && _out_server="wineserver"
       return 0
     fi
   done
@@ -1689,7 +1641,6 @@ main() {
   # Step 8 (launcher creation). find_wine sets the variables passed as arguments.
   local _is_proton="false"
   local real_wine_path=""
-  local real_wineserver="wineserver"
   local _proton_tool_name="proton"
 
   local arg
@@ -1751,25 +1702,7 @@ main() {
 
   # Detect Wine/Proton once upfront — result is used in Step 4 (DXVK) and
   # Step 8 (launcher). find_wine sets the variables passed as arguments.
-  find_wine real_wine_path _is_proton _proton_tool_name real_wineserver || true
-
-  # Maintenance Wine: Used for winetricks and wineboot (prefix setup).
-  # SLR Proton builds cannot run standalone and cause hangs in these steps.
-  # We prefer a standalone-functional Wine for maintenance.
-  local maint_wine="wine"
-  local maint_server="wineserver"
-
-  if [[ -n "${real_wine_path}" ]] && "${real_wine_path}" wineboot --version >/dev/null 2>&1; then
-    # The detected Wine is standalone-functional (e.g. GE-Proton or system Wine).
-    maint_wine="${real_wine_path}"
-    maint_server="${real_wineserver}"
-  else
-    # The detected Wine is likely SLR Proton or missing. Fallback to system Wine.
-    if command_exists wine; then
-      maint_wine=$(command -v wine)
-      maint_server=$(command -v wineserver || echo "wineserver")
-    fi
-  fi
+  find_wine real_wine_path _is_proton _proton_tool_name || true
 
   # --------------------------------------------------------------------------
   # Step 1 — System tools
@@ -1839,26 +1772,12 @@ main() {
   local lib
   for lib in "${py_libs[@]}"; do
     if ! python3 -c "import ${lib}" > /dev/null 2>&1; then
-      info_msg "Python '${lib}' library is missing (needed for deep verification/Steam integration)."
-      local install_it="true"
-      if [[ "${auto_mode}" == "false" ]]; then
-        printf "  Install it now to ~/.cluckers/pylibs? [Y/n] "
-        local answer=""
-        read -r answer
-        if [[ "${answer}" =~ ^[Nn]$ ]]; then
-          install_it="false"
-          warn_msg "Skipping '${lib}' installation. Related features will be disabled."
-        fi
-      fi
-
-      if [[ "${install_it}" == "true" ]]; then
-        info_msg "Installing Python '${lib}' library to local profile..."
-        mkdir -p "${CLUCKERS_PYLIBS}"
-        if ${pip_cmd} install --quiet --target "${CLUCKERS_PYLIBS}" "${lib}" 2>/dev/null; then
-          ok_msg "Python '${lib}' installed successfully."
-        else
-          warn_msg "Could not install the Python '${lib}' library. Some features may be limited."
-        fi
+      info_msg "Installing Python '${lib}' library to local profile..."
+      mkdir -p "${CLUCKERS_PYLIBS}"
+      ${pip_cmd} install --quiet --target "${CLUCKERS_PYLIBS}" "${lib}" 2>/dev/null \
+        || warn_msg "Could not install the Python '${lib}' library. Some features may be limited."
+      if python3 -c "import ${lib}" > /dev/null 2>&1; then
+        ok_msg "Python '${lib}' installed."
       fi
     fi
   done
@@ -1884,16 +1803,12 @@ main() {
 
   local zip_url=""
   local zip_blake3=""
-  local dat_path_rel=""
-  local dat_blake3=""
 
   if fetch_version_info; then
     local server_version
     server_version=$(parse_version_field "latest_version")
     zip_url=$(parse_version_field "zip_url")
     zip_blake3=$(parse_version_field "zip_blake3")
-    dat_path_rel=$(parse_version_field "gameversion_dat_path")
-    dat_blake3=$(parse_version_field "gameversion_dat_blake3")
     ok_msg "Server reports latest version: ${server_version}"
 
     if [[ "${resolved_version}" == "auto" ]]; then
@@ -1903,8 +1818,6 @@ main() {
       ok_msg "Using pinned version: ${resolved_version}"
       zip_url="https://updater.realmhub.io/builds/game-${resolved_version}.zip"
       zip_blake3=""
-      dat_path_rel=""
-      dat_blake3=""
     fi
   else
     warn_msg "Could not reach update server."
@@ -1917,8 +1830,6 @@ main() {
 
   ok_msg "Game version: ${resolved_version}"
   ok_msg "Download URL: ${zip_url}"
-
-  is_game_up_to_date "${dat_path_rel}" "${dat_blake3}" || true
 
   # --------------------------------------------------------------------------
   # Step 3 — Create Wine prefix
@@ -1965,8 +1876,7 @@ main() {
       #   DISPLAY=""                   — no X window for mono/gecko installers
       #   WINEDLLOVERRIDES=mscoree,mshtml=  — skip .NET and IE installers
       DISPLAY="" WINEDLLOVERRIDES="mscoree,mshtml=" \
-        WINE="${maint_wine}" WINESERVER="${maint_server}" \
-        "${maint_wine}" wineboot --init 2>/dev/null || true
+        "${real_wine_path}" wineboot --init 2>/dev/null || true
     fi
     ok_msg "Wine prefix created."
   fi
@@ -1975,8 +1885,8 @@ main() {
     info_msg "Applying WineBus SDL mapping for controllers..."
     # Forces Wine to use the SDL2 library instead of raw HID (fixes double-input/mapping).
     # See: https://wiki.winehq.org/Useful_Registry_Keys
-    WINEPREFIX="${WINEPREFIX}" WINESERVER="${maint_server}" "${maint_wine}" reg add "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus" /v DisableHidraw /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
-    WINEPREFIX="${WINEPREFIX}" WINESERVER="${maint_server}" "${maint_wine}" reg add "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus" /v EnableSDL /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
+    WINEPREFIX="${WINEPREFIX}" "${real_wine_path}" reg add "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus" /v DisableHidraw /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
+    WINEPREFIX="${WINEPREFIX}" "${real_wine_path}" reg add "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus" /v EnableSDL /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
   fi
 
   # --------------------------------------------------------------------------
@@ -1995,9 +1905,6 @@ main() {
   # --------------------------------------------------------------------------
   step_msg "Step 4 — Installing Windows runtime libraries..."
 
-  # Ensure no orphaned wineservers are running from previous steps/runs.
-  WINEPREFIX="${WINEPREFIX}" "${maint_server}" -k 2>/dev/null || true
-
   # Packages match verify.go RepairInstructions exactly:
   #   vcrun2022  — Visual C++ 2010-2022 Redistributable (superset of all prior)
   #   dxvk       — Vulkan-backed d3d8/d3d9/d3d10/d3d11/dxgi DLLs. Provides
@@ -2008,9 +1915,9 @@ main() {
   #
   # Note: d3dx9 is intentionally omitted. The game's DX9 render path is not
   # used (it runs DX11 via -dx11 flag) and d3dx9_* are not in verify.go.
-  install_winetricks_pkg "vcrun2022"  "Visual C++ 2010-2022 Redistributable" "${maint_wine}" "${maint_server}"
-  install_winetricks_pkg "dxvk"       "DXVK (Vulkan-backed DirectX 11)"       "${maint_wine}" "${maint_server}"
-  install_winetricks_pkg "d3dx11_43"  "DirectX 11 helper DLL (d3dx11_43.dll)" "${maint_wine}" "${maint_server}"
+  install_winetricks_pkg "vcrun2022"  "Visual C++ 2010-2022 Redistributable"
+  install_winetricks_pkg "dxvk"       "DXVK (Vulkan-backed DirectX 11)"
+  install_winetricks_pkg "d3dx11_43"  "DirectX 11 helper DLL (d3dx11_43.dll)"
 
   # --------------------------------------------------------------------------
   # Step 5 — Download and verify game files
@@ -2027,7 +1934,7 @@ main() {
 
   local local_game_exe="${GAME_DIR}/${GAME_EXE_REL}"
   if [[ -f "${local_game_exe}" ]]; then
-    ok_msg "Game files already present — skipping download."
+    ok_msg "Game files already present at ${GAME_DIR} — skipping download."
   else
     info_msg "Downloading game zip from ${zip_url}"
     info_msg "(This is ~5.3 GB — it may take a while on slower connections.)"
@@ -2065,8 +1972,8 @@ BLAKE3EOF
       ) || actual_blake3="skip"
 
       if [[ "${actual_blake3}" == "skip" ]]; then
-        ok_msg "Game download complete. (Integrity verification skipped — blake3 Python module not installed)."
-        info_msg "To enable automatic file verification in the future, you can run: pip install blake3"
+        warn_msg "blake3 Python module not installed — skipping BLAKE3 verification."
+        warn_msg "Install with: pip install blake3"
       elif [[ "${actual_blake3}" != "${zip_blake3}" ]]; then
         rm -f "${zip_path}"
         error_exit "BLAKE3 mismatch — game zip may be corrupt.
@@ -2074,7 +1981,7 @@ BLAKE3EOF
   Got:      ${actual_blake3}
   Re-run the script to re-download."
       else
-        ok_msg "Game download complete and verified successfully (BLAKE3)."
+        ok_msg "BLAKE3 integrity verified."
       fi
     fi
 
@@ -11851,6 +11758,10 @@ XDLL_B64_EOF
 
   mkdir -p "$(dirname "${LAUNCHER_SCRIPT}")"
 
+  local real_wineserver
+  real_wineserver="$(dirname "${real_wine_path}")/wineserver"
+  [[ ! -x "${real_wineserver}" ]] && real_wineserver="wineserver"
+
   # Part 1: setup-time values baked in as plain strings.
   cat > "${LAUNCHER_SCRIPT}" << EOF
 #!/usr/bin/env bash
@@ -12290,31 +12201,29 @@ EOF
   ok_msg "Desktop shortcut created at: ${DESKTOP_FILE}"
 
   # --------------------------------------------------------------------------
-  # Step 10 — Steam integration (optional)
-  #
-  # Adds Cluckers Central to Steam as a non-Steam game shortcut so you can
-  # launch it from your Steam library and access the Steam overlay and
-  # controller configurator.
-  #
-  # Steam must be closed before we write its config files. If Steam is running
-  # the changes will be overwritten when Steam exits.
-  # --------------------------------------------------------------------------
   step_msg "Step 10 — Configuring Steam integration (optional)..."
 
   local steam_root=""
+  local skip_steam="false"
 
   # Check if Steam is running. Steam must be closed to write to shortcuts.vdf reliably.
   if pgrep -x "steam" > /dev/null; then
     warn_msg "Steam is currently running."
-    info_msg "Please exit Steam fully (Steam > Exit) to ensure the shortcut is added correctly."
-    info_msg "If Steam remains open, it may overwrite these changes when it eventually closes."
+    warn_msg "To ensure the shortcut is added correctly, please close Steam and re-run this script."
+    warn_msg "Otherwise, Steam may overwrite the changes upon exit."
     if [[ "${auto_mode}" == "false" ]]; then
-      printf "  Once you have closed Steam, press Enter to continue (or Ctrl+C to abort)... "
-      read -r
+      printf "  Continue anyway? [y/N] "
+      local answer=""
+      read -r answer
+      if [[ ! "${answer}" =~ ^[Yy]$ ]]; then
+        info_msg "Skipping Steam integration (user requested)."
+        skip_steam="true"
+      fi
     fi
   fi
 
-  local candidate
+  if [[ "${skip_steam}" == "false" ]]; then
+    local candidate
   for candidate in \
     "${HOME}/.steam/steam" \
     "${HOME}/.local/share/Steam" \
@@ -12330,8 +12239,6 @@ EOF
     warn_msg "To add manually: add ${LAUNCHER_SCRIPT} as a non-Steam game in Steam."
   elif ! command_exists python3; then
     warn_msg "Python 3 not available — skipping Steam integration."
-  elif ! python3 -c "import vdf" >/dev/null 2>&1; then
-    warn_msg "Python 'vdf' library not available (skipped installation) — skipping Steam integration."
   else
     local steam_userdata="${steam_root}/userdata"
     local steam_user=""
@@ -12446,10 +12353,11 @@ except Exception as exc:  # pylint: disable=broad-except
 PYEOF
     fi
   fi
+fi
 
-  # --------------------------------------------------------------------------
-  # Install complete
-  # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Install complete
+# --------------------------------------------------------------------------
   printf "\n"
   # --------------------------------------------------------------------------
   # Step 11 — Game patches (Steam Deck, Controller, or Skip Movies)
