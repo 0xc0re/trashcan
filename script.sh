@@ -425,7 +425,9 @@ install_winetricks_pkg() {
   env WINEPREFIX="${WINEPREFIX}" "${maint_server}" -k 2>/dev/null || true
   
   local wt_flags=""
-  [[ "${is_auto}" == "true" ]] && wt_flags="-q"
+  if [[ "${is_auto}" == "true" && "${VERBOSE_MODE:-false}" != "true" ]]; then
+    wt_flags="-q"
+  fi
 
   # Run winetricks
   if WINE="${maint_wine}" WINESERVER="${maint_server}" \
@@ -1039,9 +1041,9 @@ ZIPBLAKE3EOF
   if command -v bsdtar >/dev/null 2>&1; then
     bsdtar -xf "${zip_path}" -C "${GAME_DIR}" || error_exit "Extraction failed. Re-run with --update to retry."
   elif command -v 7z >/dev/null 2>&1; then
-    7z x -y "${zip_path}" -o"${GAME_DIR}" >/dev/null || error_exit "Extraction failed. Re-run with --update to retry."
+    7z x -y "${zip_path}" -o"${GAME_DIR}" || error_exit "Extraction failed. Re-run with --update to retry."
   else
-    UNZIP_DISABLE_ZIPBOMB_DETECTION=TRUE unzip -q -o "${zip_path}" -d "${GAME_DIR}" \
+    UNZIP_DISABLE_ZIPBOMB_DETECTION=TRUE unzip -o "${zip_path}" -d "${GAME_DIR}" \
       || error_exit "Extraction failed. Re-run with --update to retry."
   fi
   rm -f "${zip_path}"
@@ -1770,8 +1772,10 @@ main() {
 
   if [[ "${verbose}" == "true" ]]; then
     export WINEDEBUG=""
+    export VERBOSE_MODE="true"
   else
     export WINEDEBUG="-all"
+    export VERBOSE_MODE="false"
   fi
 
   # Auto-detect Steam Deck. If running on Deck hardware but -d was not passed,
@@ -2006,8 +2010,8 @@ main() {
     info_msg "Applying WineBus SDL mapping for controllers..."
     # Forces Wine to use the SDL2 library instead of raw HID (fixes double-input/mapping).
     # See: https://wiki.winehq.org/Useful_Registry_Keys
-    env WINEPREFIX="${WINEPREFIX}" WINESERVER="${maint_server}" "${maint_wine}" reg add "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus" /v DisableHidraw /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
-    env WINEPREFIX="${WINEPREFIX}" WINESERVER="${maint_server}" "${maint_wine}" reg add "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus" /v EnableSDL /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
+    env WINEPREFIX="${WINEPREFIX}" WINESERVER="${maint_server}" "${maint_wine}" reg add "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus" /v DisableHidraw /t REG_DWORD /d 1 /f || true
+    env WINEPREFIX="${WINEPREFIX}" WINESERVER="${maint_server}" "${maint_wine}" reg add "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus" /v EnableSDL /t REG_DWORD /d 1 /f || true
   fi
 
   # --------------------------------------------------------------------------
