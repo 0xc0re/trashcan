@@ -183,17 +183,23 @@ readonly GAME_EXE_REL="Realm-Royale/Binaries/Win64/ShippingPC-RealmGameNoEditor.
 # removing Steam non-Steam-game shortcuts so the correct shortcut is found.
 # Verify: https://store.steampowered.com/app/813820/Realm_Royale_Reforged/
 readonly REALM_ROYALE_APPID="813820"
-readonly STEAM_CDN_URL="https://steamcdn-a.akamaihd.net/steam/apps/${REALM_ROYALE_APPID}"
+readonly STEAM_CDN_URL="https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${REALM_ROYALE_APPID}"
 
 # High-quality assets from Steam for shortcuts and the Steam library.
-readonly STEAM_LOGO_URL="${STEAM_CDN_URL}/logo.png"
-readonly STEAM_GRID_URL="${STEAM_CDN_URL}/library_600x900_2x.jpg"
-readonly STEAM_HERO_URL="${STEAM_CDN_URL}/library_hero.jpg"
+# logo.png is the clear logo, library_600x900_2x.jpg is the vertical grid.
+# library_hero.jpg is the hero background.
+readonly STEAM_LOGO_URL="${STEAM_CDN_URL}/logo.png?t=1739811771"
+readonly STEAM_GRID_URL="${STEAM_CDN_URL}/library_600x900_2x.jpg?t=1739811771"
+readonly STEAM_HERO_URL="${STEAM_CDN_URL}/library_hero_2x.jpg?t=1739811771"
+readonly STEAM_WIDE_URL="${STEAM_CDN_URL}/capsule_616x353.jpg?t=1739811771"
+readonly STEAM_HEADER_URL="${STEAM_CDN_URL}/header.jpg?t=1739811771"
 
 readonly STEAM_ASSETS_DIR="${HOME}/.cluckers/assets"
 readonly STEAM_LOGO_PATH="${STEAM_ASSETS_DIR}/logo.png"
 readonly STEAM_GRID_PATH="${STEAM_ASSETS_DIR}/grid.jpg"
 readonly STEAM_HERO_PATH="${STEAM_ASSETS_DIR}/hero.jpg"
+readonly STEAM_WIDE_PATH="${STEAM_ASSETS_DIR}/wide.jpg"
+readonly STEAM_HEADER_PATH="${STEAM_ASSETS_DIR}/header.jpg"
 
 # Directory where the two helper .exe / .dll binaries are stored after setup.
 readonly TOOLS_DIR="${HOME}/.local/share/cluckers-central/tools"
@@ -328,13 +334,24 @@ get_wine_lib_path() {
   local root_dir
   bin_dir="$(dirname "${wine_path}")"
   root_dir="$(dirname "${bin_dir}")"
+  
+  # Add the bin directory itself to PATH (useful for sub-processes)
+  local libs=""
+  
   if [[ "$(basename "${bin_dir}")" == "bin" ]]; then
     # Standard layout: bin/ next to lib64/ and lib/
-    printf "%s/lib64:%s/lib" "${root_dir}" "${root_dir}"
+    libs="${root_dir}/lib64:${root_dir}/lib"
   elif [[ "$(basename "${bin_dir}")" == "files/bin" ]]; then
     # Proton layout: files/bin/ next to files/lib64/ and files/lib/
-    printf "%s/lib64:%s/lib" "${root_dir}" "${root_dir}"
+    # root_dir is 'files'
+    libs="${root_dir}/lib64:${root_dir}/lib"
+    # Also add the parent's lib if it exists (some custom builds use both)
+    local parent_root
+    parent_root="$(dirname "${root_dir}")"
+    [[ -d "${parent_root}/lib64" ]] && libs="${libs}:${parent_root}/lib64"
+    [[ -d "${parent_root}/lib" ]] && libs="${libs}:${parent_root}/lib"
   fi
+  printf "%s" "${libs}"
 }
 
 # Returns 0 if the local game matches the version info on the server.
@@ -12556,7 +12573,9 @@ XDLL_B64_EOF
     info_msg "Downloading high-quality assets from Steam CDN..."
     if curl -sfL -o "${STEAM_LOGO_PATH}" "${STEAM_LOGO_URL}" \
        && curl -sfL -o "${STEAM_GRID_PATH}" "${STEAM_GRID_URL}" \
-       && curl -sfL -o "${STEAM_HERO_PATH}" "${STEAM_HERO_URL}"; then
+       && curl -sfL -o "${STEAM_HERO_PATH}" "${STEAM_HERO_URL}" \
+       && curl -sfL -o "${STEAM_WIDE_PATH}" "${STEAM_WIDE_URL}" \
+       && curl -sfL -o "${STEAM_HEADER_PATH}" "${STEAM_HEADER_URL}"; then
       cp "${STEAM_LOGO_PATH}" "${ICON_PATH}"
       asset_downloaded="true"
       ok_msg "High-quality Steam assets downloaded successfully."
@@ -13195,6 +13214,8 @@ EOF
       STEAM_GRID_PATH_ENV="${STEAM_GRID_PATH}" \
       STEAM_HERO_PATH_ENV="${STEAM_HERO_PATH}" \
       STEAM_LOGO_PATH_ENV="${STEAM_LOGO_PATH}" \
+      STEAM_WIDE_PATH_ENV="${STEAM_WIDE_PATH}" \
+      STEAM_HEADER_PATH_ENV="${STEAM_HEADER_PATH}" \
       python3 - << 'PYEOF'
 """Adds Cluckers Central to Steam as a non-Steam shortcut."""
 
@@ -13212,6 +13233,8 @@ APP_NAME        = os.environ["APP_NAME_ENV"]
 STEAM_GRID      = os.environ["STEAM_GRID_PATH_ENV"]
 STEAM_HERO      = os.environ["STEAM_HERO_PATH_ENV"]
 STEAM_LOGO      = os.environ["STEAM_LOGO_PATH_ENV"]
+STEAM_WIDE      = os.environ["STEAM_WIDE_PATH_ENV"]
+STEAM_HEADER    = os.environ["STEAM_HEADER_PATH_ENV"]
 
 _OK   = "  [\033[0;32m OK \033[0m]"
 _WARN = "  [\033[1;33mWARN\033[0m]"
@@ -13296,6 +13319,8 @@ try:
         STEAM_GRID: ["", "p"],      # Vertical grid and portrait
         STEAM_HERO: ["_hero"],      # Hero background
         STEAM_LOGO: ["_logo"],      # Clear logo
+        STEAM_WIDE: ["_grid"],      # Horizontal wide grid
+        STEAM_HEADER: ["_header"],  # Header image
     }
 
     for src, suffixes in art_map.items():
