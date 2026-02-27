@@ -2313,20 +2313,39 @@ find_wine() {
         rm -rf "${check_pfx}" 2>/dev/null || true
 
         if [[ "${can_run}" == "true" ]]; then
-          # Prioritize GE-Proton by parsing its version.
-          if [[ "${base}" =~ GE-Proton([0-9]+)-([0-9]+) ]]; then
+          # Try to extract version from folder name or 'version' file.
+          # Matches GE-ProtonX-Y, Proton-GE-X-Y, proton-cachyos, Proton 9.0, etc.
+          local v_str=""
+          if [[ "${base}" =~ ([0-9]+)\.([0-9]+) ]]; then
+            # Matches "Proton 9.0", "Proton 8.0"
             major="${BASH_REMATCH[1]}"
             minor="${BASH_REMATCH[2]}"
-            ver=$(printf "%05d-%05d" "${major}" "${minor}")
-            if [[ "${ver}" > "${newest_version}" || -z "${newest_proton}" ]]; then
-              newest_version="${ver}"
+            v_str=$(printf "%05d-%05d" "${major}" "${minor}")
+          elif [[ "${base}" =~ ([0-9]+)-([0-9]+) ]]; then
+            # Matches "GE-Proton9-20", "proton-cachyos-10-1"
+            major="${BASH_REMATCH[1]}"
+            minor="${BASH_REMATCH[2]}"
+            v_str=$(printf "%05d-%05d" "${major}" "${minor}")
+          elif [[ -f "${p}/version" ]]; then
+            # Read version from Steam's 'version' file (e.g. "1712345678 proton-9.0-2")
+            local v_file_content
+            v_file_content=$(head -n1 "${p}/version" 2>/dev/null || true)
+            if [[ "${v_file_content}" =~ ([0-9]+)\.([0-9]+) ]]; then
+              major="${BASH_REMATCH[1]}"
+              minor="${BASH_REMATCH[2]}"
+              v_str=$(printf "%05d-%05d" "${major}" "${minor}")
+            fi
+          fi
+
+          if [[ -n "${v_str}" ]]; then
+            if [[ "${v_str}" > "${newest_version}" || -z "${newest_proton}" ]]; then
+              newest_version="${v_str}"
               newest_proton="${check_exe}"
               newest_script="${proton_script}"
               newest_is_slr="${current_is_slr}"
             fi
-          elif [[ -z "${newest_proton}" ]] || [[ "${current_is_slr}" == "true" && "${newest_is_slr}" == "false" ]]; then
-            # Prefer any Proton/SLR build over a basic standalone Wine if we
-            # haven't found a GE-Proton yet.
+          elif [[ -z "${newest_proton}" ]]; then
+            # Fallback for builds without clear versioning.
             newest_proton="${check_exe}"
             newest_script="${proton_script}"
             newest_is_slr="${current_is_slr}"
@@ -12849,8 +12868,8 @@ XDLL_B64_EOF
     error_exit "No Proton found. Install a Proton build via Steam or ProtonUp-Qt."
   ok_msg "Wine binary (Proton): ${real_wine_path}"
   ok_msg "Proton compat tool name: ${_proton_tool_name}"
-  # Sync primitives: ntsync (modern) or fsync (standard GE-Proton).
-  if [[ "${real_wine_path}" == *"GE-Proton"* ]]; then
+  # Sync primitives: ntsync (modern) or fsync (standard Proton fallback).
+  if [[ "${_is_proton}" == "true" ]]; then
     if [[ -c /dev/ntsync ]]; then
       ok_msg "WINE_NTSYNC=1 will be set in the launcher (compatible kernel found)."
     else
@@ -12947,14 +12966,13 @@ WINE="${real_wine_path}"
 WINESERVER="${real_wineserver}"
 PROTON_SCRIPT="${real_proton_script}"
 
-# Sync primitives: ntsync (modern) or fsync (standard GE-Proton).
+# Sync primitives: ntsync (modern) or fsync (standard Proton fallback).
 # These improve game performance and reduce stutter by optimizing how
 # the game synchronizes background tasks with your CPU.
-# Only set when using a GE-Proton build.
-$(if [[ "${real_wine_path}" == *"GE-Proton"* ]]; then
+# Supported by most modern Proton builds.
+$(if [[ "${_is_proton}" == "true" ]]; then
   # Use ntsync if /dev/ntsync exists (requires a modern Linux kernel 6.10+).
-  # Otherwise fall back to fsync (available in all GE-Proton builds).
-  # If you experience any anti-cheat kicks, try swapping WINE_NTSYNC for WINEFSYNC.
+  # Otherwise fall back to fsync (standard Proton fallback).
   if [[ -c /dev/ntsync ]]; then
     printf 'export WINE_NTSYNC=1\n'
   else
@@ -13276,6 +13294,7 @@ if [[ -n "${PROTON_SCRIPT:-}" && -x "${PROTON_SCRIPT}" ]]; then
   # and prefix initialization automatically.
   # We set STEAM_COMPAT_DATA_PATH to the root Cluckers directory;
   # Proton looks for the Wine prefix in a subdirectory named 'pfx'.
+  export STEAM_COMPAT_CLIENT_INSTALL_PATH="${STEAM_COMPAT_CLIENT_INSTALL_PATH:-${HOME}/.steam/steam}"
   export STEAM_COMPAT_DATA_PATH="${CLUCKERS_ROOT}"
   _launch_cmd=("${PROTON_SCRIPT}" "run")
 else
