@@ -13167,6 +13167,7 @@ LAUNCHEOF
 Name=${APP_NAME}
 Comment=Play Cluckers Central (Realm Royale) on Linux
 Exec=${LAUNCHER_SCRIPT}
+Path=${HOME}/.local/bin
 Icon=${ICON_PATH}
 Terminal=false
 Type=Application
