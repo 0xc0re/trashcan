@@ -249,9 +249,64 @@ command_exists() { command -v "$1" > /dev/null 2>&1; }
 #  System dependency helpers
 # ==============================================================================
 
+# Returns 0 if the local game matches the version info on the server.
+#
+# Arguments:
+#   $1 - dat_path_rel: Relative path to GameVersion.dat.
+#   $2 - dat_blake3: Expected BLAKE3 hash from the server.
+is_game_up_to_date() {
+  local dat_path_rel="$1"
+  local dat_blake3="$2"
+
+  local local_game_exe="${GAME_DIR}/${GAME_EXE_REL}"
+  if [[ ! -f "${local_game_exe}" ]]; then
+    return 1
+  fi
+
+  if [[ -z "${dat_path_rel}" || -z "${dat_blake3}" ]]; then
+    ok_msg "Game files found (version info missing; deep integrity check skipped)."
+    return 0
+  fi
+
+  local local_dat="${GAME_DIR}/${dat_path_rel}"
+  if [[ ! -f "${local_dat}" ]]; then
+    ok_msg "Game files found but version data is missing — assuming update needed."
+    return 1
+  fi
+
+  info_msg "Checking local GameVersion.dat (${local_dat})..."
+  local local_dat_hash
+  local_dat_hash=$(python3 - "${local_dat}" << 'DATBLAKE3EOF'
+import sys
+try:
+    from blake3 import blake3 as b3
+    h = b3()
+    with open(sys.argv[1], "rb") as f:
+        h.update(f.read())
+    print(h.hexdigest())
+except ImportError:
+    print("skip")
+DATBLAKE3EOF
+  ) || local_dat_hash="skip"
+
+  if [[ "${local_dat_hash}" == "skip" ]]; then
+    ok_msg "Game files found, but deep integrity verification was skipped (blake3 missing)."
+    return 0
+  fi
+
+  if [[ "${local_dat_hash}" == "${dat_blake3}" ]]; then
+    ok_msg "Game version verified successfully (BLAKE3 match)."
+    return 0
+  fi
+
+  warn_msg "Game version mismatch or update available."
+  info_msg "Run the script with --update to get the latest version."
+  return 1
+}
+
 # Installs missing system packages using the distro's package manager.
 #
-# Checks for: wine winetricks curl wget python3 unzip sha256sum.
+# Checks for: wine winetricks curl wget python3 unzip sha256sum cabextract.
 # Installs only what is absent. Supports apt, pacman, dnf, zypper.
 #
 # Arguments:
@@ -262,9 +317,20 @@ install_sys_deps() {
   local to_install=()
   local tool
 
-  # Use pip3 as the check for pip.
-  for tool in wine winetricks curl wget python3 unzip sha256sum "$@"; do
-    command_exists "${tool}" || to_install+=("${tool}")
+  local -a tools=(wine winetricks curl wget python3 unzip sha256sum cabextract)
+  
+  info_msg "Checking for: ${tools[*]}..."
+  for tool in "${tools[@]}" "$@"; do
+    if command_exists "${tool}"; then
+      # Optionally show which version is found for key tools
+      if [[ "${tool}" == "wine" ]]; then
+        info_msg "Found wine: $(wine --version)"
+      elif [[ "${tool}" == "winetricks" ]]; then
+        info_msg "Found winetricks: $(winetricks --version | head -n1)"
+      fi
+    else
+      to_install+=("${tool}")
+    fi
   done
   
   # Explicitly check for pip / pip3.
@@ -277,6 +343,24 @@ install_sys_deps() {
     esac
   fi
 
+  # Some distros provide wine/winetricks commands via package names that differ
+  # from binary names. Ensure apt users still receive the full runtime stack
+  # only when those packages are actually missing.
+  if [[ "${pkg_mgr}" == "apt" ]]; then
+    if ! dpkg-query -W -f='${Status}' wine32:i386 2>/dev/null | grep -q "install ok installed"; then
+      to_install+=("wine32:i386")
+    fi
+    if ! dpkg-query -W -f='${Status}' wine64 2>/dev/null | grep -q "install ok installed"; then
+      to_install+=("wine64")
+    fi
+    if ! dpkg-query -W -f='${Status}' libwine:i386 2>/dev/null | grep -q "install ok installed"; then
+      to_install+=("libwine:i386")
+    fi
+    if ! dpkg-query -W -f='${Status}' fonts-wine 2>/dev/null | grep -q "install ok installed"; then
+      to_install+=("fonts-wine")
+    fi
+  fi
+
   if [[ ${#to_install[@]} -eq 0 ]]; then
     ok_msg "All required system tools are already installed."
     return 0
@@ -286,9 +370,9 @@ install_sys_deps() {
   case "${pkg_mgr}" in
     apt)
       sudo dpkg --add-architecture i386
-      sudo apt-get update -qq
-      sudo apt-get install -y \
-        "${to_install[@]}" wine32:i386 wine64 libwine:i386 fonts-wine
+      info_msg "Refreshing apt package metadata..."
+      sudo apt-get update
+      sudo apt-get install -y "${to_install[@]}"
       ;;
     pacman)
       sudo pacman -Sy --noconfirm "${to_install[@]}" wine-mono wine-gecko
@@ -338,7 +422,7 @@ install_winetricks_pkg() {
 
   info_msg "Installing ${desc}..."
   # Ensure no orphaned wineservers are running before winetricks.
-  WINEPREFIX="${WINEPREFIX}" "${maint_server}" -k 2>/dev/null || true
+  env WINEPREFIX="${WINEPREFIX}" "${maint_server}" -k 2>/dev/null || true
   
   local wt_flags=""
   [[ "${is_auto}" == "true" ]] && wt_flags="-q"
@@ -354,7 +438,7 @@ install_winetricks_pkg() {
   fi
 
   # Cleanup after winetricks.
-  WINEPREFIX="${WINEPREFIX}" "${maint_server}" -k 2>/dev/null || true
+  env WINEPREFIX="${WINEPREFIX}" "${maint_server}" -k 2>/dev/null || true
 }
 
 # ==============================================================================
@@ -687,7 +771,7 @@ parallel_download() {
       info_msg "Resuming partial download (${partial_size} bytes)..."
       resume_flag="-C -"
     fi
-    curl -L --progress-bar ${resume_flag} -o "${dest}.partial" "$url" || return 1
+    curl -L --progress-bar "${resume_flag}" -o "${dest}.partial" "$url" || return 1
     mv "${dest}.partial" "$dest"
     return 0
   fi
@@ -743,7 +827,8 @@ parallel_download() {
         fi
         current_size=$(( current_size + ps ))
         if [[ -f "${dest}.part${i}.tmp" ]]; then
-          local tmps=$(stat -c%s "${dest}.part${i}.tmp" 2>/dev/null || echo 0)
+          local tmps
+          tmps=$(stat -c%s "${dest}.part${i}.tmp" 2>/dev/null || echo 0)
           current_size=$(( current_size + tmps ))
         fi
       done
@@ -752,14 +837,17 @@ parallel_download() {
       local bar_length=40
       local filled=$(( percent * bar_length / 100 ))
       local empty=$(( bar_length - filled ))
-      local bar_str=$(printf "%${filled}s" | tr ' ' '#')
-      local empty_str=$(printf "%${empty}s" | tr ' ' '-')
+      local bar_str
+      bar_str=$(printf "%${filled}s" | tr ' ' '#')
+      local empty_str
+      empty_str=$(printf "%${empty}s" | tr ' ' '-')
       
       printf "\r  [INFO]  [%s%s] %d%% (%d / %d MB)   " "${bar_str}" "${empty_str}" "${percent}" "$((current_size / 1048576))" "$((size / 1048576))"
       
       local all_done=true
+      local pid
       for pid in "${pids[@]}"; do
-        if kill -0 $pid 2>/dev/null; then
+        if kill -0 "$pid" 2>/dev/null; then
           all_done=false
           break
         fi
@@ -774,8 +862,9 @@ parallel_download() {
     
     # Wait and capture exit codes
     local failed=false
-    for pid in "${pids[@]}"; do
-      wait $pid || failed=true
+    local pid_w
+    for pid_w in "${pids[@]}"; do
+      wait "$pid_w" || failed=true
     done
     
     if $failed; then
@@ -890,36 +979,9 @@ run_update() {
   # Mirrors NeedsUpdate() in internal/game/version.go:
   #   Read local GameVersion.dat, compute BLAKE3, compare to server value.
   # Falls back to "needs update" if the file is absent or unreadable.
-  local needs_update="true"
-  if [[ -n "${dat_path_rel}" ]] && [[ -n "${dat_blake3}" ]]; then
-    local local_dat="${GAME_DIR}/${dat_path_rel}"
-    if [[ -f "${local_dat}" ]]; then
-      info_msg "Checking local GameVersion.dat (${local_dat})..."
-      local local_dat_hash
-      local_dat_hash=$(python3 - "${local_dat}" << 'DATBLAKE3EOF'
-import sys
-try:
-    from blake3 import blake3 as b3
-    h = b3()
-    with open(sys.argv[1], "rb") as f:
-        h.update(f.read())
-    print(h.hexdigest())
-except ImportError:
-    print("skip")
-DATBLAKE3EOF
-      ) || local_dat_hash="skip"
-
-      if [[ "${local_dat_hash}" == "skip" ]]; then
-        warn_msg "blake3 module not available — cannot compare GameVersion.dat hashes."
-        warn_msg "Assuming update is needed."
-      elif [[ "${local_dat_hash}" == "${dat_blake3}" ]]; then
-        needs_update="false"
-      fi
-    fi
-  fi
-
-  if [[ "${needs_update}" == "false" ]]; then
+  if is_game_up_to_date "${dat_path_rel}" "${dat_blake3}"; then
     ok_msg "Game is already up to date (${target_version})."
+    ok_msg "Game version verified successfully."
     return 0
   fi
 
@@ -1817,13 +1879,15 @@ main() {
   local -a py_libs=(vdf blake3)
   local lib
   for lib in "${py_libs[@]}"; do
-    if ! python3 -c "import ${lib}" > /dev/null 2>&1; then
-      info_msg "Installing Python '${lib}' library to local profile..."
+    if PYTHONPATH="${CLUCKERS_PYLIBS}${PYTHONPATH:+:${PYTHONPATH}}" python3 -c "import ${lib}" > /dev/null 2>&1; then
+      ok_msg "Python '${lib}' library is already installed."
+    else
+      info_msg "Installing Python '${lib}' library to local profile (showing pip output)..."
       mkdir -p "${CLUCKERS_PYLIBS}"
-      ${pip_cmd} install --quiet --target "${CLUCKERS_PYLIBS}" "${lib}" 2>/dev/null \
-        || warn_msg "Could not install the Python '${lib}' library. Some features may be limited."
-      if python3 -c "import ${lib}" > /dev/null 2>&1; then
-        ok_msg "Python '${lib}' installed."
+      if ${pip_cmd} install --upgrade --target "${CLUCKERS_PYLIBS}" "${lib}"; then
+        ok_msg "Python '${lib}' installed successfully."
+      else
+        warn_msg "Could not install the Python '${lib}' library. Some features may be limited."
       fi
     fi
   done
@@ -1849,12 +1913,16 @@ main() {
 
   local zip_url=""
   local zip_blake3=""
+  local dat_path_rel=""
+  local dat_blake3=""
 
   if fetch_version_info; then
     local server_version
     server_version=$(parse_version_field "latest_version")
     zip_url=$(parse_version_field "zip_url")
     zip_blake3=$(parse_version_field "zip_blake3")
+    dat_path_rel=$(parse_version_field "gameversion_dat_path")
+    dat_blake3=$(parse_version_field "gameversion_dat_blake3")
     ok_msg "Server reports latest version: ${server_version}"
 
     if [[ "${resolved_version}" == "auto" ]]; then
@@ -1864,6 +1932,8 @@ main() {
       ok_msg "Using pinned version: ${resolved_version}"
       zip_url="https://updater.realmhub.io/builds/game-${resolved_version}.zip"
       zip_blake3=""
+      dat_path_rel=""
+      dat_blake3=""
     fi
   else
     warn_msg "Could not reach update server."
@@ -1876,6 +1946,8 @@ main() {
 
   ok_msg "Game version: ${resolved_version}"
   ok_msg "Download URL: ${zip_url}"
+
+  is_game_up_to_date "${dat_path_rel}" "${dat_blake3}" || true
 
   # --------------------------------------------------------------------------
   # Step 3 — Create Wine prefix
@@ -1932,8 +2004,8 @@ main() {
     info_msg "Applying WineBus SDL mapping for controllers..."
     # Forces Wine to use the SDL2 library instead of raw HID (fixes double-input/mapping).
     # See: https://wiki.winehq.org/Useful_Registry_Keys
-    WINEPREFIX="${WINEPREFIX}" WINESERVER="${maint_server}" "${maint_wine}" reg add "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus" /v DisableHidraw /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
-    WINEPREFIX="${WINEPREFIX}" WINESERVER="${maint_server}" "${maint_wine}" reg add "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus" /v EnableSDL /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
+    env WINEPREFIX="${WINEPREFIX}" WINESERVER="${maint_server}" "${maint_wine}" reg add "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus" /v DisableHidraw /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
+    env WINEPREFIX="${WINEPREFIX}" WINESERVER="${maint_server}" "${maint_wine}" reg add "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus" /v EnableSDL /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
   fi
 
   # --------------------------------------------------------------------------
@@ -1953,7 +2025,7 @@ main() {
   step_msg "Step 4 — Installing Windows runtime libraries..."
 
   # Ensure no orphaned wineservers are running from previous steps/runs.
-  WINEPREFIX="${WINEPREFIX}" "${maint_server}" -k 2>/dev/null || true
+  env WINEPREFIX="${WINEPREFIX}" "${maint_server}" -k 2>/dev/null || true
 
   # Packages match verify.go RepairInstructions exactly:
   #   vcrun2022  — Visual C++ 2010-2022 Redistributable (superset of all prior)
