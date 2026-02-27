@@ -321,14 +321,14 @@ command_exists() { command -v "$1" > /dev/null 2>&1; }
 #  System dependency helpers
 # ==============================================================================
 
-# Returns the LD_LIBRARY_PATH required to find a Wine binary's internal DLLs.
+# Returns the PATH and LD_LIBRARY_PATH additions required for a Wine binary.
 #
 # Arguments:
 #   $1 - wine_path: Absolute path to the wine or wine64 binary.
 #
 # Returns:
-#   Prints the required LD_LIBRARY_PATH to stdout.
-get_wine_lib_path() {
+#   Prints "PATH_ADD:LD_LIB_ADD" to stdout.
+get_wine_env_additions() {
   local wine_path="$1"
   local bin_dir
   local root_dir
@@ -342,12 +342,12 @@ get_wine_lib_path() {
     root_dir=$(readlink -f "${root_dir}")
   fi
 
-  # Search for standard and architecture-specific lib folders in the root.
-  # Modern Wine/Proton often nests unix/windows build files in subfolders.
+  # Search for standard and architecture-specific lib folders.
   local lib_dirs=(
     "lib64" "lib" 
     "lib64/wine" "lib/wine"
     "lib64/wine/x86_64-unix" "lib/wine/i386-unix"
+    "lib64/wine/x86_64-windows" "lib/wine/i386-windows"
     "lib/x86_64-linux-gnu" "lib/i386-linux-gnu"
   )
   for ld in "${lib_dirs[@]}"; do
@@ -356,8 +356,7 @@ get_wine_lib_path() {
     fi
   done
   
-  # If it's a Proton 'files' layout, also check the parent directory
-  # (e.g. .../Proton-Name/lib instead of .../Proton-Name/files/lib).
+  # Proton 'files' layout check (covers both Steam and custom builds)
   if [[ "${bin_dir}" == */files/bin ]]; then
      local parent_root
      parent_root=$(readlink -f "$(dirname "${root_dir}")")
@@ -367,7 +366,11 @@ get_wine_lib_path() {
        fi
      done
   fi
-  printf "%s" "${libs}"
+  
+  # Also include common system library paths as fallback
+  libs="${libs}:/usr/lib64:/usr/lib:/lib64:/lib"
+  
+  printf "%s|%s" "${bin_dir}" "${libs}"
 }
 
 # Returns 0 if the local game matches the version info on the server.
@@ -796,14 +799,17 @@ install_winetricks_multi() {
   # when VAR is declared readonly, even though it would only be a temporary
   # assignment for the child process. env sidesteps this restriction entirely.
   #
-  # LD_LIBRARY_PATH is set using get_wine_lib_path() so winetricks can find
-  # Wine's internal DLLs (like kernel32.dll) when using a custom Wine build.
+  # LD_LIBRARY_PATH and PATH are set using get_wine_env_additions() so
+  # winetricks can find Wine's internal DLLs (like kernel32.dll) and binaries.
   #
   # shellcheck disable=SC2086
-  local lib_path
-  lib_path=$(get_wine_lib_path "${maint_wine}")
+  local env_adds bin_add lib_add
+  env_adds=$(get_wine_env_additions "${maint_wine}")
+  bin_add="${env_adds%%|*}"
+  lib_add="${env_adds##*|}"
   if env WINEPREFIX="${WINEPREFIX}" WINE="${maint_wine}" WINESERVER="${maint_server}" \
-     LD_LIBRARY_PATH="${lib_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+     PATH="${bin_add}:${PATH}" \
+     LD_LIBRARY_PATH="${lib_add}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
      DISPLAY="" WINEDLLOVERRIDES="mscoree,mshtml=" \
      winetricks ${wt_flags} "${to_install[@]}"; then
     ok_msg "${desc} installed successfully."
@@ -2595,16 +2601,20 @@ main() {
       #   WINEDLLOVERRIDES=mscoree,mshtml=  — skip .NET and IE installers
       # env is used instead of inline VAR=value syntax because WINEPREFIX is
       # declared readonly and bash rejects inline re-assignment of readonly vars.
-      local lib_path
-      lib_path=$(get_wine_lib_path "${maint_wine}")
+      local env_adds bin_add lib_add
+      env_adds=$(get_wine_env_additions "${maint_wine}")
+      bin_add="${env_adds%%|*}"
+      lib_add="${env_adds##*|}"
       env WINEPREFIX="${WINEPREFIX}" DISPLAY="" \
-        LD_LIBRARY_PATH="${lib_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+        PATH="${bin_add}:${PATH}" \
+        LD_LIBRARY_PATH="${lib_add}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
         WINEDLLOVERRIDES="mscoree,mshtml=" \
         WINE="${maint_wine}" WINESERVER="${maint_server}" \
         "${maint_wine}" wineboot --init || true
       # Stabilize the prefix — wait for all Wine children to exit cleanly.
       env WINEPREFIX="${WINEPREFIX}" WINESERVER="${maint_server}" \
-        LD_LIBRARY_PATH="${lib_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+        PATH="${bin_add}:${PATH}" \
+        LD_LIBRARY_PATH="${lib_add}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
         "${maint_server}" -w || true
     fi
     ok_msg "Wine prefix created."
@@ -12702,11 +12712,14 @@ XDLL_B64_EOF
 # Exit on error, undefined variable, or pipe failure.
 set -euo pipefail
 
-# Set LD_LIBRARY_PATH to include Wine's internal libraries so it can find
-# essential DLLs like kernel32.dll even when run outside of Steam.
-# We prepend them to any existing LD_LIBRARY_PATH.
-_lib_path="$(get_wine_lib_path "${real_wine_path}")"
-export LD_LIBRARY_PATH="\${_lib_path}\${LD_LIBRARY_PATH:+:\${LD_LIBRARY_PATH}}"
+# Set PATH and LD_LIBRARY_PATH to include Wine's internal libraries and
+# binaries so it can find essential DLLs like kernel32.dll even when run
+# outside of Steam. We prepend them to any existing paths.
+_env_adds="$(get_wine_env_additions "${real_wine_path}")"
+_bin_add="\${_env_adds%%|*}"
+_lib_add="\${_env_adds##*|}"
+export PATH="\${_bin_add}:\${PATH}"
+export LD_LIBRARY_PATH="\${_lib_add}\${LD_LIBRARY_PATH:+:\${LD_LIBRARY_PATH}}"
 
 export WINEPREFIX="${WINEPREFIX}"
 export WINEARCH="win64"
