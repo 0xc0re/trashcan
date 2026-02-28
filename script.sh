@@ -4284,14 +4284,23 @@ _cleanup() {
   # gamescopereaper (16 chars) exceeds it — the kernel truncates comm to 15
   # chars ("gamescopereappe"), so pkill -x never matches. Use -f instead,
   # which matches against the full command line in /proc/PID/cmdline.
-  pkill -KILL -x "gamescope-wl"       2>/dev/null || true
-  pkill -KILL -f "gamescopereaper"    2>/dev/null || true
-  pkill -KILL -f "winedevice.exe.*${WINEPREFIX}" 2>/dev/null || true
+  pkill -KILL -x "gamescope-wl"    2>/dev/null || true
+  pkill -KILL -f "gamescopereaper" 2>/dev/null || true
+  # Kill winedevice.exe processes that have our WINEPREFIX in their cmdline.
+  # pkill -f treats the pattern as a regex — dots in the path are wildcards.
+  # Use grep with fixed-string matching against /proc/*/cmdline instead to
+  # avoid false positives from path components with special characters.
+  local _wineprefix_escaped
+  _wineprefix_escaped=$(printf '%s' "${WINEPREFIX}" | sed 's/[.[\*^$(){}|+?]/\\&/g')
+  pkill -KILL -f "winedevice\.exe.*${_wineprefix_escaped}" 2>/dev/null || true
 
   # Shut down the wineserver for our prefix only. This flushes pending
   # registry writes and reaps any remaining Wine helper processes.
   # Scoped by WINEPREFIX so other Wine prefixes and games are not affected.
+  # Use -k (kill) not -w (wait) so we don't block the launcher on shutdown.
   WINEPREFIX="${WINEPREFIX}" "${WINESERVER}" -k 2>/dev/null || true
+  # Give wineserver a moment to process the kill before we exit.
+  sleep 0.5
 
   # Remove temp files created during this launcher session.
   [[ -n "${_bootstrap_tmp:-}" ]] && rm -f "${_bootstrap_tmp}"
@@ -4327,6 +4336,11 @@ if [[ -s "${_bootstrap_tmp}" ]]; then
         "${_bootstrap_wine}" "${_shm_name}" "${_game_exe_wine}" \
         "${_game_args[@]}" &
     _GS_PID=$!
+    # Wine and winedevice.exe run as grandchildren of gamescope via
+    # gamescopereaper. They may form their own process group. Setting
+    # _WINE_PID = _GS_PID ensures _cleanup() sweeps the whole tree via
+    # both session kill and process group kill from the same root PID.
+    _WINE_PID=${_GS_PID}
     wait "${_GS_PID}" || true
   else
     # setsid makes wine the session leader so _kill_session() reaches wine
@@ -4345,6 +4359,7 @@ else
     setsid env DBUS_SESSION_BUS_ADDRESS=/dev/null ${GS_ARGS} -- \
       "${_launch_cmd[@]}" "${_game_exe}" "${_game_args[@]}" &
     _GS_PID=$!
+    _WINE_PID=${_GS_PID}
     wait "${_GS_PID}" || true
   else
     setsid "${_launch_cmd[@]}" "${_game_exe}" "${_game_args[@]}" &
