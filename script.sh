@@ -1169,12 +1169,28 @@ run_uninstall() {
   info_msg "Looking for Steam installation to clean up shortcuts..."
   local steam_root=""
   local candidate
+
+  # Validate a Steam directory by checking for canonical Steam marker files.
+  # This matches the isSteamDir() logic in cluckers/internal/wine/steamdir.go.
+  # Checking only for a userdata/ subdirectory is insufficient because some
+  # Steam layouts (Flatpak) have userdata elsewhere relative to the root.
+  _is_steam_dir() {
+    [[ -f "${1}/steam.sh" ]] \
+      || [[ -f "${1}/ubuntu12_32/steamclient.so" ]]
+  }
+
   for candidate in \
-    "${HOME}/.steam/steam" \
     "${HOME}/.local/share/Steam" \
-    "${HOME}/.var/app/com.valvesoftware.Steam/.local/share/Steam"; do
-    if [[ -d "${candidate}" ]]; then
-      steam_root="${candidate}"
+    "${HOME}/.steam/steam" \
+    "${HOME}/.steam/root" \
+    "${HOME}/.var/app/com.valvesoftware.Steam/data/Steam" \
+    "${HOME}/.var/app/com.valvesoftware.Steam/.local/share/Steam" \
+    "${HOME}/snap/steam/common/.local/share/Steam"; do
+    # Resolve symlinks so we don't visit the same directory twice.
+    local _resolved
+    _resolved=$(readlink -f "${candidate}" 2>/dev/null) || continue
+    if _is_steam_dir "${_resolved}"; then
+      steam_root="${_resolved}"
       break
     fi
   done
@@ -1188,10 +1204,15 @@ run_uninstall() {
   local steam_user=""
   local userdata_dir="${steam_root}/userdata"
   if [[ -d "${userdata_dir}" ]]; then
-    # awk NR==1 picks the first (most-recently-modified) user directory.
+    # Pick the most-recently-modified userdata subdirectory as the active
+    # Steam account. stat -c %Y is more portable than find -printf '%T@'
+    # (which is a GNU-only extension unavailable on some systems).
     steam_user=$(
-      find "${userdata_dir}" -maxdepth 1 -mindepth 1 -type d \
-        -printf '%T@ %f\n' 2>/dev/null \
+      find "${userdata_dir}" -maxdepth 1 -mindepth 1 -type d 2>/dev/null \
+        | while IFS= read -r _d; do
+            printf '%s %s\n' "$(stat -c '%Y' "${_d}" 2>/dev/null || echo 0)" \
+                             "$(basename "${_d}")"
+          done \
         | sort -rn \
         | awk 'NR==1 {print $2}'
     )
@@ -4491,16 +4512,25 @@ EOF
 
   if [[ "${skip_steam}" == "false" ]]; then
     local candidate
-    # Search all known Steam installation locations, including native, Flatpak,
-    # and Snap. Multiple may exist on the same system; we take the first found.
+    # Search all known Steam installation locations, in priority order:
+    # native first, then Flatpak, then Snap. Multiple may coexist on the same
+    # system; we take the first one that passes the Steam validity check.
+    #
+    # We validate using canonical Steam marker files (steam.sh or
+    # ubuntu12_32/steamclient.so), matching cluckers/internal/wine/steamdir.go.
+    # Checking only for userdata/ is unreliable — Flatpak Steam at data/Steam
+    # may have userdata/ nested differently depending on the version.
     for candidate in \
-      "${HOME}/.steam/steam" \
       "${HOME}/.local/share/Steam" \
-      "${HOME}/.var/app/com.valvesoftware.Steam/.local/share/Steam" \
+      "${HOME}/.steam/steam" \
+      "${HOME}/.steam/root" \
       "${HOME}/.var/app/com.valvesoftware.Steam/data/Steam" \
-      "${HOME}/snap/steam/common/.steam/steam"; do
-      if [[ -d "${candidate}/userdata" ]]; then
-        steam_root="${candidate}"
+      "${HOME}/.var/app/com.valvesoftware.Steam/.local/share/Steam" \
+      "${HOME}/snap/steam/common/.local/share/Steam"; do
+      local _r
+      _r=$(readlink -f "${candidate}" 2>/dev/null) || continue
+      if [[ -f "${_r}/steam.sh" ]] || [[ -f "${_r}/ubuntu12_32/steamclient.so" ]]; then
+        steam_root="${_r}"
         break
       fi
     done
