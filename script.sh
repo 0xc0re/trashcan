@@ -3776,9 +3776,11 @@ XDLL_B64_EOF
     # ICO is natively handled by Steam and all major Linux desktop environments.
     mkdir -p "${ICON_DIR}"
     if curl ${CURL_FLAGS}f -o "${STEAM_ICO_PATH}" "${STEAM_ICO_URL}"; then
-      # Also place the ICO at ICON_PATH (which IS STEAM_ICO_PATH for .desktop use).
-      # ICON_PATH == "${ICON_DIR}/cluckers-central.ico"
-      [[ "${STEAM_ICO_PATH}" != "${ICON_PATH}" ]] && cp "${STEAM_ICO_PATH}" "${ICON_PATH}"
+      # Copy ICO to both locations (ICON_PATH for desktop, STEAM_ICO_PATH for Steam).
+      # ICON_PATH = ~/.local/share/icons/cluckers-central.ico (desktop file)
+      # STEAM_ICO_PATH = ~/.cluckers/assets/icon.ico (Steam shortcuts.vdf)
+      cp "${STEAM_ICO_PATH}" "${ICON_PATH}"
+      ok_msg "Game icon downloaded successfully."
     else
       warn_msg "Could not download game ICO — desktop icon will use fallback."
     fi
@@ -4229,51 +4231,64 @@ if [[ -s "${_bootstrap_tmp}" ]]; then
   _game_args+=("-content_bootstrap_shm=${_shm_name}")
 fi
 
-# Cleanup: kill only what we spawned when the game exits, crashes, or is closed
-# externally (e.g. via Steam's stop button or a SIGTERM from the Steam reaper).
-# We intentionally avoid killing all shell background jobs (jobs -p) because
-# that could hit unrelated processes when launched through Steam's runtime.
+# Cleanup: kill only what we spawned when interrupted (Ctrl+C, SIGTERM), or clean
+# up temp files on normal exit. We must NOT kill the game on normal EXIT because
+# wait returns when the game closes naturally, and killing already-dead processes
+# can interfere with proper exit code propagation.
 _cleanup() {
+  # Only kill processes if we're handling a signal (INT/TERM/HUP), not normal EXIT.
+  # The $1 parameter will be set to the signal name when called by the trap.
+  local sig="${1:-EXIT}"
+  
+  # Remove the trap to prevent recursion.
   trap '' EXIT INT TERM HUP
 
-  # Kill the gamescope process GROUP (negative PID = whole group).
-  # gamescope sets itself as group leader, so wine and its children are in the
-  # same group. Sending SIGTERM to -PID kills gamescope + wine + children all at
-  # once, then SIGKILL after 3 s to catch anything that ignored SIGTERM.
-  if [[ -n "${_GS_PID:-}" ]]; then
-    # Send SIGTERM to the whole process group.
-    kill -- "-${_GS_PID}" 2>/dev/null || true
-    # Wait up to 3 seconds then force-kill any survivors.
-    local _waited=0
-    while kill -0 "${_GS_PID}" 2>/dev/null && (( _waited < 30 )); do
-      sleep 0.1
-      (( _waited++ )) || true
-    done
-    kill -9 -- "-${_GS_PID}" 2>/dev/null || true
+  # Only kill game/wine processes if we were interrupted, not on normal exit.
+  if [[ "${sig}" != "EXIT" ]]; then
+    # Kill the gamescope process GROUP (negative PID = whole group).
+    # gamescope sets itself as group leader, so wine and its children are in the
+    # same group. Sending SIGTERM to -PID kills gamescope + wine + children all at
+    # once, then SIGKILL after 3 s to catch anything that ignored SIGTERM.
+    if [[ -n "${_GS_PID:-}" ]]; then
+      # Send SIGTERM to the whole process group.
+      kill -- "-${_GS_PID}" 2>/dev/null || true
+      # Wait up to 3 seconds then force-kill any survivors.
+      local _waited=0
+      while kill -0 "${_GS_PID}" 2>/dev/null && (( _waited < 30 )); do
+        sleep 0.1
+        (( _waited++ )) || true
+      done
+      kill -9 -- "-${_GS_PID}" 2>/dev/null || true
+    fi
+
+    # If wine was run directly (no gamescope), kill it and its children using the
+    # Wine PID we captured.
+    if [[ -n "${_WINE_PID:-}" ]]; then
+      kill -- "-${_WINE_PID}" 2>/dev/null || true
+      local _waited=0
+      while kill -0 "${_WINE_PID}" 2>/dev/null && (( _waited < 30 )); do
+        sleep 0.1
+        (( _waited++ )) || true
+      done
+      kill -9 -- "-${_WINE_PID}" 2>/dev/null || true
+    fi
+
+    # Shut down the wineserver for OUR prefix only.
+    # Passing WINEPREFIX scopes the kill to this prefix's socket; it will not
+    # affect other Wine prefixes or games running concurrently.
+    WINEPREFIX="${WINEPREFIX}" "${WINESERVER}" -k 2>/dev/null || true
   fi
 
-  # If wine was run directly (no gamescope), kill it and its children using the
-  # Wine PID we captured.
-  if [[ -n "${_WINE_PID:-}" ]]; then
-    kill -- "-${_WINE_PID}" 2>/dev/null || true
-    local _waited=0
-    while kill -0 "${_WINE_PID}" 2>/dev/null && (( _waited < 30 )); do
-      sleep 0.1
-      (( _waited++ )) || true
-    done
-    kill -9 -- "-${_WINE_PID}" 2>/dev/null || true
-  fi
-
-  # Shut down the wineserver for OUR prefix only.
-  # Passing WINEPREFIX scopes the kill to this prefix's socket; it will not
-  # affect other Wine prefixes or games running concurrently.
-  WINEPREFIX="${WINEPREFIX}" "${WINESERVER}" -k 2>/dev/null || true
-
-  # Remove temp files we created.
+  # Always remove temp files on any exit (normal or interrupted).
   [[ -n "${_bootstrap_tmp:-}" ]] && rm -f "${_bootstrap_tmp}"
   [[ -n "${_oidc_tmp:-}" ]] && rm -f "${_oidc_tmp}"
 }
-trap _cleanup EXIT INT TERM HUP
+
+# Set up traps: pass signal name to cleanup function so it knows whether to kill processes.
+trap '_cleanup EXIT' EXIT
+trap '_cleanup INT' INT
+trap '_cleanup TERM' TERM
+trap '_cleanup HUP' HUP
 
 # ---- Launch ---------------------------------------------------------------
 
@@ -4370,6 +4385,7 @@ Icon=${ICON_PATH}
 Terminal=false
 Type=Application
 Categories=Game;
+StartupNotify=true
 StartupWMClass=ShippingPC-RealmGameNoEditor.exe
 EOF
 
