@@ -204,9 +204,21 @@ readonly GAME_EXE_REL="Realm-Royale/Binaries/Win64/ShippingPC-RealmGameNoEditor.
 readonly REALM_ROYALE_APPID="813820"
 readonly STEAM_ASSET_BASE="https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${REALM_ROYALE_APPID}"
 
-# High-quality assets from Steam for shortcuts and the Steam library.
-# We use the official client icon URL to avoid the blurriness caused by scaling
-# the wide store logo into a square icon.
+# High-quality art assets fetched from the Steam CDN.
+# All URLs verified against https://store.steampowered.com/app/813820
+# and the img-sauce file in this repository.
+#
+# URL reference (from img-sauce):
+#   logo_2x.png              — transparent logo overlay   (PNG, ~429 KB)
+#   library_600x900_2x.jpg   — vertical portrait poster   (JPG, ~198 KB)
+#   library_hero_2x.jpg      — hero / background banner   (JPG, ~779 KB)
+#   capsule_616x353.jpg      — wide capsule / landscape   (JPG,  ~96 KB)
+#   header.jpg               — small header / store tile  (JPG,  ~55 KB)
+#   hero_capsule.jpg         — secondary hero capsule art (JPG,  ~86 KB)
+#
+# The icon: Steam's community .ico is only a 32×32 BMP (4 KB). We instead
+# use logo_2x.png (already downloaded below) as the desktop and Steam icon
+# because it is full-resolution and renders crisply at any size.
 readonly STEAM_LOGO_URL="${STEAM_ASSET_BASE}/logo_2x.png?t=1739811771"
 readonly STEAM_GRID_URL="${STEAM_ASSET_BASE}/library_600x900_2x.jpg?t=1739811771"
 readonly STEAM_HERO_URL="${STEAM_ASSET_BASE}/library_hero_2x.jpg?t=1739811771"
