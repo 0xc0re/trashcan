@@ -137,7 +137,8 @@ GAME_VERSION="${GAME_VERSION:-auto}"
 #   -W <width> -H <height>   — output resolution (default: 1920×1080)
 #   -r <hz>                  — output refresh rate cap (default: 240)
 #   --adaptive-sync          — enable FreeSync/G-Sync (remove if unsupported)
-#   --borderless             — borderless fullscreen instead of true fullscreen
+#   --fullscreen             — true fullscreen (borderless is broken — does not
+#                              fill the screen even with a correct resolution set)
 #   --hdr-enabled            — enable HDR passthrough (requires HDR display)
 #
 # Steam Deck users: these args are NOT used when --steam-deck / -d is passed
@@ -146,7 +147,7 @@ GAME_VERSION="${GAME_VERSION:-auto}"
 # (stuck in a corner or invisible) on many Desktop Environments and Distros.
 # These args are also used when --gamescope-with-controller / -G is passed,
 # which enables Gamescope plus full controller support in a single flag.
-GAMESCOPE_ARGS="gamescope --force-grab-cursor -W 1920 -H 1080 -r 240 --adaptive-sync --borderless"
+GAMESCOPE_ARGS="gamescope --force-grab-cursor -W 1920 -H 1080 -r 240 --adaptive-sync --fullscreen"
 
 # ==============================================================================
 #  Constants  (readonly — cannot be changed at runtime)
@@ -4012,7 +4013,8 @@ MOVIE_PATCH_EOF
 _handle_movies "\${SKIP_MOVIES}"
 
 # Gamescope PID (if used).
-_GS_PID=""
+_GS_PID=""    # PID of gamescope process group leader (gamescope path)
+_WINE_PID=""  # PID of wine process group leader (non-gamescope path)
 EOF
 
 
