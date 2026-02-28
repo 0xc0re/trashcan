@@ -570,6 +570,8 @@ install_sys_deps() {
   if ! command_exists pip && ! command_exists pip3; then
     local pip_pkg="python3-pip"
     [[ "${pkg_mgr}" == "pacman" ]] && pip_pkg="python-pip"
+    [[ "${pkg_mgr}" == "dnf" ]] && pip_pkg="python3-pip"
+    [[ "${pkg_mgr}" == "zypper" ]] && pip_pkg="python3-pip"
     if ! is_pkg_installed "${pkg_mgr}" "${pip_pkg}"; then
       to_install+=("${pip_pkg}")
     fi
@@ -648,28 +650,38 @@ install_sys_deps() {
 
 # Ensures essential Python modules are installed via pip.
 # Pillow is required for icon extraction, blake3 for update verification,
-# and vdf for Steam integration. We use 'python3 -m pip install --user'
-# to keep these isolated from the system Python environment.
+# and vdf for Steam integration. We use 'python3 -m pip install --target'
+# to keep these isolated in our local pylibs directory.
 ensure_python_deps() {
   step_msg "Step 1c — Ensuring Python dependencies (Pillow, blake3, vdf)..."
   
-  local pip_cmd="python3 -m pip"
   if ! command_exists python3; then
     warn_msg "python3 not found — skipping Python dependency check."
     return 0
   fi
 
-  # Check if pip is available.
+  local pip_cmd="python3 -m pip"
+  # Check if pip module is available.
   if ! "${pip_cmd}" --version >/dev/null 2>&1; then
-    warn_msg "pip not found — Python modules might be missing."
+    # Some distros don't include pip with python3. 
+    # install_sys_deps should have caught this, but we try ensurepip as a last resort.
+    info_msg "pip module not found. Attempting to bootstrap via ensurepip..."
+    python3 -m ensurepip --user >/dev/null 2>&1 || true
+  fi
+
+  if ! "${pip_cmd}" --version >/dev/null 2>&1; then
+    warn_msg "pip still not found — Python modules might be missing."
     return 0
   fi
 
   local -a py_deps=(Pillow blake3 vdf)
   local missing_deps=()
 
+  mkdir -p "${CLUCKERS_PYLIBS}"
+
   for dep in "${py_deps[@]}"; do
-    if ! python3 -c "import ${dep}" >/dev/null 2>&1; then
+    if ! PYTHONPATH="${CLUCKERS_PYLIBS}${PYTHONPATH:+:${PYTHONPATH}}" \
+         python3 -c "import ${dep}" >/dev/null 2>&1; then
       missing_deps+=("${dep}")
     fi
   done
@@ -680,21 +692,14 @@ ensure_python_deps() {
   fi
 
   info_msg "Installing missing Python modules: ${missing_deps[*]}..."
-  # We use --user to avoid needing sudo for pip installs, which is recommended.
-  # If we are in a PEP 668 'externally-managed' environment, --user might fail
-  # unless we use --break-system-packages (not ideal) or a venv.
-  # For simplicity and given this is a game setup script, we try --user first.
-  if ! "${pip_cmd}" install --user "${missing_deps[@]}" >/dev/null 2>&1; then
-    # If it fails, it might be due to PEP 668. Try with --break-system-packages
-    # only if the user is ok or we are in auto mode.
-    info_msg "Standard pip install failed. Attempting with --break-system-packages (legacy)..."
-    "${pip_cmd}" install --user --break-system-packages "${missing_deps[@]}" >/dev/null 2>&1 || \
-      warn_msg "Failed to install Python modules via pip. Icon extraction or update verification may fail."
+  # Use --target to install into our private pylibs directory.
+  # This avoids PEP 668 issues and doesn't require sudo.
+  if ! "${pip_cmd}" install --upgrade --target "${CLUCKERS_PYLIBS}" "${missing_deps[@]}" >/dev/null 2>&1; then
+    warn_msg "Failed to install Python modules via pip. Icon extraction or update verification may fail."
+    return 1
   fi
 
-  if [[ $? -eq 0 ]]; then
-    ok_msg "Python modules installed successfully."
-  fi
+  ok_msg "Python modules installed successfully."
 }
 
 
@@ -2879,53 +2884,6 @@ EOF
     export PATH="${HOME}/.local/bin:${PATH}"
     info_msg "Added ~/.local/bin to PATH for this session."
     info_msg "(Add 'export PATH=\"\$HOME/.local/bin:\$PATH\"' to ~/.bashrc to make it permanent.)"
-  fi
-
-  # Python libraries used by this script:
-  #   vdf      — reads/writes Steam's binary config files (shortcuts.vdf etc.)
-  #   blake3   — computes hashes for game file integrity verification
-
-  # Ensure pip is available. Prefer python3 -m pip for reliability.
-  local pip_cmd=""
-  if python3 -m pip --version > /dev/null 2>&1; then
-    pip_cmd="python3 -m pip"
-  elif command_exists pip3; then
-    pip_cmd="pip3"
-  elif command_exists pip; then
-    pip_cmd="pip"
-  else
-    info_msg "Python 'pip' module not found. Attempting to install via ensurepip..."
-    python3 -m ensurepip --user > /dev/null 2>&1 || true
-    if python3 -m pip --version > /dev/null 2>&1; then
-      pip_cmd="python3 -m pip"
-    fi
-  fi
-
-  if [[ -z "${pip_cmd}" ]]; then
-    warn_msg "Could not find pip or pip3. Python library installation will likely fail."
-    pip_cmd="pip" # Fallback to 'pip' and hope for the best
-  fi
-
-  local -a py_libs=(vdf blake3)
-  local missing_libs=()
-  local lib
-  for lib in "${py_libs[@]}"; do
-    if ! PYTHONPATH="${CLUCKERS_PYLIBS}${PYTHONPATH:+:${PYTHONPATH}}" \
-         python3 -c "import ${lib}" > /dev/null 2>&1; then
-      missing_libs+=("${lib}")
-    fi
-  done
-
-  if [[ ${#missing_libs[@]} -gt 0 ]]; then
-    info_msg "Installing missing Python libraries: ${missing_libs[*]}..."
-    mkdir -p "${CLUCKERS_PYLIBS}"
-    if ${pip_cmd} install --upgrade --target "${CLUCKERS_PYLIBS}" "${missing_libs[@]}"; then
-      ok_msg "Python libraries installed successfully."
-    else
-      warn_msg "Could not install some Python libraries. Some features may be limited."
-    fi
-  else
-    ok_msg "All required Python libraries are already installed."
   fi
 
   # Skip heavy steps (Steps 2-6) if we just performed an update.
