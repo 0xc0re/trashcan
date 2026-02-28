@@ -3794,21 +3794,36 @@ XDLL_B64_EOF
       warn_msg "unzip not found — desktop icon cannot be installed."
       warn_msg "Install unzip: sudo apt install unzip  (or your distro's equivalent)"
     else
-      # Extract the icon from the game EXE. The internal path varies by build
-      # toolchain. List all .rsrc/ICON entries and try each in turn.
+      # Extract the icon from the game EXE using 7z (more reliable than unzip
+      # for PE executables with appended zip data). 7z lists all entries and
+      # we pick the first .rsrc/ICON entry found.
       local _ico_path=""
-      while IFS= read -r _ico_path; do
-        [[ -z "${_ico_path}" ]] && continue
-        unzip -p "${_game_exe}" "${_ico_path}" > "${_exe_ico}" 2>/dev/null \
-          && [[ -s "${_exe_ico}" ]] && break
-        rm -f "${_exe_ico}"
-        _ico_path=""
-      done < <(unzip -l "${_game_exe}" 2>/dev/null \
-               | awk '{print $NF}' \
-               | grep -iE '\.rsrc/ICON/[^/]+$')
+      if command_exists 7z; then
+        _ico_path=$(7z l "${_game_exe}" 2>/dev/null \
+          | awk '{print $NF}' \
+          | grep -iE '\.rsrc.ICON.[^/\\]+$' \
+          | head -1)
+        if [[ -n "${_ico_path}" ]]; then
+          7z e -so "${_game_exe}" "${_ico_path}" > "${_exe_ico}" 2>/dev/null || true
+          [[ -s "${_exe_ico}" ]] || rm -f "${_exe_ico}"
+        fi
+      fi
+
+      # Fall back to unzip if 7z failed or is unavailable.
+      if [[ ! -s "${_exe_ico}" ]] && command_exists unzip; then
+        while IFS= read -r _ico_path; do
+          [[ -z "${_ico_path}" ]] && continue
+          unzip -p "${_game_exe}" "${_ico_path}" > "${_exe_ico}" 2>/dev/null \
+            && [[ -s "${_exe_ico}" ]] && break
+          rm -f "${_exe_ico}"
+          _ico_path=""
+        done < <(unzip -l "${_game_exe}" 2>/dev/null \
+                 | awk '{print $NF}' \
+                 | grep -iE '\.rsrc.ICON.[^/\\]+$')
+      fi
 
       if [[ -s "${_exe_ico}" ]]; then
-        ok_msg "Game icon extracted from EXE (${_ico_path})."
+        ok_msg "Game icon extracted from EXE (${_ico_path:-unknown})."
         # Convert the ICO to PNG using Pillow.
         python3 - "${_exe_ico}" "${ICON_PATH}" \
                    "${ICON_DIR}/hicolor/256x256/apps/cluckers-central.png" << 'ICO2PNG_EOF'
@@ -4320,29 +4335,34 @@ trap _cleanup EXIT INT TERM HUP
 _launch_cmd=("${WINE}")
 
 _launch_gamescope() {
-  # Launch gamescope wrapping the game. gamescope does not always exit when
-  # the game exits. We wait on the Wine/shm_launcher child process directly
-  # rather than on gamescope, then kill gamescope explicitly when done.
-  #
-  # gamescope runs the launch command as: gamescope -- wine shm_launcher.exe
-  # gamescopereaper forks wine as its direct child. We find wine's PID by
-  # waiting briefly for it to appear as a descendant of gamescope, then
-  # wait on that PID. When wine exits, we kill the gamescope session.
+  # Launch gamescope wrapping the game.
+  # gamescope -- <cmd> makes gamescope exit when gamescopereaper exits, but
+  # gamescopereaper may outlive the game. We use a sentinel file to detect
+  # when shm_launcher / wine has exited, then kill gamescope explicitly.
   local _gs_cmd=("$@")
+  local _sentinel
+  _sentinel=$(mktemp)
+
+  # Wrap the launch command with a sentinel: remove the sentinel file when
+  # wine/shm_launcher exits so the watcher below detects game exit reliably.
   # shellcheck disable=SC2086
   setsid env DBUS_SESSION_BUS_ADDRESS=/dev/null ${GS_ARGS} -- \
-    "${_gs_cmd[@]}" &
+    bash -c '"$@"; rm -f "$1"' -- "${_sentinel}" "${_gs_cmd[@]}" &
   _GS_PID=$!
   _WINE_PID=${_GS_PID}
 
-  # gamescope is launched with -- which causes it to exit when its primary
-  # child (gamescopereaper -> wine) exits. Simply wait on gamescope directly.
-  # When the game closes, gamescope exits, wait returns, and we fall through
-  # to exit 0 which triggers the EXIT trap (_cleanup).
-  wait "${_GS_PID}" || true
+  # Wait for the sentinel file to be removed (game exited) or gamescope to
+  # exit on its own (whichever comes first).
+  while kill -0 "${_GS_PID}" 2>/dev/null && [[ -f "${_sentinel}" ]]; do
+    sleep 0.5
+  done
+  rm -f "${_sentinel}"
 
-  # Belt-and-suspenders: kill gamescope session in case it is still alive.
+  # Game has exited — kill gamescope and its entire process group.
   _kill_session "${_GS_PID}"
+
+  # Reap the background gamescope process to avoid a zombie.
+  wait "${_GS_PID}" 2>/dev/null || true
 }
 
 if [[ -s "${_bootstrap_tmp}" ]]; then
