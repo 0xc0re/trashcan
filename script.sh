@@ -4265,37 +4265,29 @@ _cleanup() {
   # Remove the trap to prevent recursion if _cleanup is called more than once.
   trap '' EXIT INT TERM HUP
 
-  # Kill the gamescope process group and session.
-  # gamescope spawns gamescopereaper and gamescope-wl as children; they may
-  # create their own sessions, so we kill by group, session, and parent PID.
-  _kill_session "${_GS_PID:-}"
-
-  # Kill the Wine process group for the non-gamescope path
-  # (wine → game → winedevice.exe → services.exe).
-  _kill_session "${_WINE_PID:-}"
-
-  # Belt-and-suspenders sweep: directly kill any gamescope helper processes
-  # and winedevice.exe that survived the session kill above.
-  # winedevice.exe is scoped to our WINEPREFIX path so other Wine games running
-  # concurrently are not affected.
-  # gamescope-wl (12 chars) fits in the 15-char Linux comm field — use -x.
-  # gamescopereaper (16 chars) exceeds it — the kernel truncates comm to 15
-  # chars ("gamescopereappe"), so pkill -x never matches. Use -f instead,
-  # which matches against the full command line in /proc/PID/cmdline.
+  # Step 1: Kill gamescope-wl and gamescopereaper by name first.
+  # gamescope spawns these as children with their own sessions, so session-
+  # based kills do not reach them. Kill them before wineserver shutdown to
+  # prevent them from keeping a second winedevice.exe alive.
+  # gamescope-wl (12 chars) fits in the 15-char comm field — use -x.
+  # gamescopereaper (16 chars) is truncated to 15 in comm — use -f.
   pkill -KILL -x "gamescope-wl"    2>/dev/null || true
   pkill -KILL -f "gamescopereaper" 2>/dev/null || true
 
-  # Ask wineserver to shut down gracefully. This causes wineserver to send
-  # SIGTERM to winedevice.exe, services.exe, plugplay.exe, and other Wine
-  # helper processes it manages, then exit itself.
-  WINEPREFIX="${WINEPREFIX}" "${WINESERVER}" -k 2>/dev/null || true
+  # Step 2: Kill gamescope and Wine process groups and sessions.
+  # By the time _cleanup runs gamescope may have already exited cleanly.
+  # _kill_session handles dead PIDs safely.
+  _kill_session "${_GS_PID:-}"
+  _kill_session "${_WINE_PID:-}"
 
-  # Give wineserver a moment to reap its children before force-killing.
+  # Step 3: Graceful wineserver shutdown — terminates winedevice.exe,
+  # services.exe, plugplay.exe and all Wine helpers for our prefix.
+  WINEPREFIX="${WINEPREFIX}" "${WINESERVER}" -k 2>/dev/null || true
   sleep 0.5
 
-  # Force-kill any Wine helper processes that did not exit after wineserver -k.
-  # These are safe to kill by name — they only ever run as Wine internals and
-  # do not conflict with other system processes of the same name.
+  # Step 4: Force-kill any Wine helpers that survived the graceful shutdown.
+  # Safe to kill by exact name — these are Wine-internal process names that
+  # do not conflict with any regular Linux system processes.
   pkill -KILL -x "winedevice.exe" 2>/dev/null || true
   pkill -KILL -x "services.exe"   2>/dev/null || true
   pkill -KILL -x "plugplay.exe"   2>/dev/null || true
