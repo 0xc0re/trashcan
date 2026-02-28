@@ -4261,64 +4261,52 @@ if [[ -s "${_bootstrap_tmp}" ]]; then
   _game_args+=("-content_bootstrap_shm=${_shm_name}")
 fi
 
-# Cleanup: kill only what we spawned when interrupted (Ctrl+C, SIGTERM), or clean
-# up temp files on normal exit. We must NOT kill the game on normal EXIT because
-# wait returns when the game closes naturally, and killing already-dead processes
-# can interfere with proper exit code propagation.
+# Cleanup: kill all processes we spawned whenever the launcher exits — whether
+# the game closed normally, was interrupted (Ctrl+C), or received SIGTERM.
+# When the game exits, shm_launcher.exe returns and wait completes, but Wine
+# background processes (winedevice.exe) and gamescope (+ its reaper) stay alive
+# until explicitly killed. We always clean them up here.
 _cleanup() {
-  # Only kill processes if we're handling a signal (INT/TERM/HUP), not normal EXIT.
-  # The $1 parameter will be set to the signal name when called by the trap.
-  local sig="${1:-EXIT}"
-  
   # Remove the trap to prevent recursion.
   trap '' EXIT INT TERM HUP
 
-  # Only kill game/wine processes if we were interrupted, not on normal exit.
-  if [[ "${sig}" != "EXIT" ]]; then
-    # Kill the gamescope process GROUP (negative PID = whole group).
-    # gamescope sets itself as group leader, so wine and its children are in the
-    # same group. Sending SIGTERM to -PID kills gamescope + wine + children all at
-    # once, then SIGKILL after 3 s to catch anything that ignored SIGTERM.
-    if [[ -n "${_GS_PID:-}" ]]; then
-      # Send SIGTERM to the whole process group.
-      kill -- "-${_GS_PID}" 2>/dev/null || true
-      # Wait up to 3 seconds then force-kill any survivors.
-      local _waited=0
-      while kill -0 "${_GS_PID}" 2>/dev/null && (( _waited < 30 )); do
-        sleep 0.1
-        (( _waited++ )) || true
-      done
-      kill -9 -- "-${_GS_PID}" 2>/dev/null || true
-    fi
-
-    # If wine was run directly (no gamescope), kill it and its children using the
-    # Wine PID we captured.
-    if [[ -n "${_WINE_PID:-}" ]]; then
-      kill -- "-${_WINE_PID}" 2>/dev/null || true
-      local _waited=0
-      while kill -0 "${_WINE_PID}" 2>/dev/null && (( _waited < 30 )); do
-        sleep 0.1
-        (( _waited++ )) || true
-      done
-      kill -9 -- "-${_WINE_PID}" 2>/dev/null || true
-    fi
-
-    # Shut down the wineserver for OUR prefix only.
-    # Passing WINEPREFIX scopes the kill to this prefix's socket; it will not
-    # affect other Wine prefixes or games running concurrently.
-    WINEPREFIX="${WINEPREFIX}" "${WINESERVER}" -k 2>/dev/null || true
+  # Kill the gamescope process GROUP (negative PID = whole group).
+  # gamescope sets itself as group leader, so wine and all its children are in
+  # the same group. SIGTERM first, then SIGKILL after 3 s for anything stubborn.
+  if [[ -n "${_GS_PID:-}" ]]; then
+    kill -- "-${_GS_PID}" 2>/dev/null || true
+    local _waited=0
+    while kill -0 "${_GS_PID}" 2>/dev/null && (( _waited < 30 )); do
+      sleep 0.1
+      (( _waited++ )) || true
+    done
+    kill -9 -- "-${_GS_PID}" 2>/dev/null || true
   fi
 
-  # Always remove temp files on any exit (normal or interrupted).
+  # If wine was run directly (no gamescope), kill its process group.
+  # setsid made wine the group leader so kill -- -PID reaches winedevice.exe
+  # and all other Wine children without touching unrelated processes.
+  if [[ -n "${_WINE_PID:-}" ]]; then
+    kill -- "-${_WINE_PID}" 2>/dev/null || true
+    local _waited=0
+    while kill -0 "${_WINE_PID}" 2>/dev/null && (( _waited < 30 )); do
+      sleep 0.1
+      (( _waited++ )) || true
+    done
+    kill -9 -- "-${_WINE_PID}" 2>/dev/null || true
+  fi
+
+  # Shut down the wineserver for OUR prefix only — this flushes any pending
+  # registry writes and reaps winedevice.exe / services.exe cleanly.
+  # Scoped by WINEPREFIX so other Wine prefixes/games are unaffected.
+  WINEPREFIX="${WINEPREFIX}" "${WINESERVER}" -k 2>/dev/null || true
+
+  # Remove temp files we created.
   [[ -n "${_bootstrap_tmp:-}" ]] && rm -f "${_bootstrap_tmp}"
   [[ -n "${_oidc_tmp:-}" ]] && rm -f "${_oidc_tmp}"
 }
 
-# Set up traps: pass signal name to cleanup function so it knows whether to kill processes.
-trap '_cleanup EXIT' EXIT
-trap '_cleanup INT' INT
-trap '_cleanup TERM' TERM
-trap '_cleanup HUP' HUP
+trap _cleanup EXIT INT TERM HUP
 
 # ---- Launch ---------------------------------------------------------------
 
