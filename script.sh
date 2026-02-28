@@ -1725,7 +1725,7 @@ ZIPBLAKE3EOF
   rm -f "${zip_path}"
   ok_msg "Game updated to ${target_version}."
 
-  # Apply game patches (Deck, controller, movies) if any flags were set.
+  # Apply game patches (Deck or controller) if any flags were set.
   # Without this, --update --steam-deck would download the update but skip
   # re-applying input patches, leaving the game unconfigured for the Deck.
   if [[ "${steam_deck_flag}" == "true" || "${controller_flag}" == "true" ]]; then
@@ -2977,6 +2977,27 @@ EOF
     ok_msg "Wine prefix created."
   fi
 
+  # Install xinput1_3.dll into the Wine prefix system32 so Wine loads our
+  # custom XInput remapper instead of the built-in stub when the game requests
+  # XInput. This must happen AFTER wineboot has fully initialised the prefix.
+  # Proton creates drive_c/windows/system32 as a symlink during prefix init;
+  # copying into it before wineboot runs follows a dangling symlink and fails
+  # with: cp: not writing through dangling symlink '…/system32/xinput1_3.dll'
+  # Wine resolves DLLs from the prefix system32 before its own built-in stubs,
+  # so placing the remapper here ensures it intercepts all XInput calls.
+  # Source: https://gitlab.winehq.org/wine/wine/-/blob/master/dlls/xinput1_3/xinput_main.c
+  if [[ "${controller_mode}" == "true" ]]; then
+    local _xdll_src="${TOOLS_DIR}/xinput1_3.dll"
+    local _wine_sys32="${WINEPREFIX}/drive_c/windows/system32"
+    if [[ -f "${_xdll_src}" ]] && [[ -d "${_wine_sys32}" ]]; then
+      cp --remove-destination "${_xdll_src}" "${_wine_sys32}/xinput1_3.dll" \
+        && ok_msg "xinput1_3.dll placed in Wine system32." \
+        || warn_msg "Could not copy xinput1_3.dll into Wine system32 — controller remapping may not work."
+    elif [[ -f "${_xdll_src}" ]]; then
+      warn_msg "Wine system32 not yet initialised — xinput1_3.dll will be copied on next run."
+    fi
+  fi
+
   if [[ "${controller_mode}" == "true" ]]; then
     # Check that the user has read access to /dev/input/event* nodes.
     # Without this, Wine's SDL layer cannot enumerate the controller and it
@@ -3645,17 +3666,12 @@ XDLL_B64_EOF
     ok_msg "xinput1_3.dll installed."
     fi
 
-    # Install xinput1_3.dll into the Wine prefix system32 so Wine loads it
-    # instead of the built-in stub when the game requests XInput.
-    # Wine resolves DLLs from the prefix system32 before its own built-in stubs,
-    # so placing our remapper here ensures it intercepts all XInput calls.
-    # Source: https://gitlab.winehq.org/wine/wine/-/blob/master/dlls/xinput1_3/xinput_main.c
-    local wine_sys32="${WINEPREFIX}/drive_c/windows/system32"
-    mkdir -p "${wine_sys32}"
-    if [[ -f "${xdll_dst}" ]]; then
-      cp "${xdll_dst}" "${wine_sys32}/xinput1_3.dll"
-      ok_msg "xinput1_3.dll placed in Wine system32."
-    fi
+    # NOTE: xinput1_3.dll is placed into the Wine prefix system32 in Step 3,
+    # after wineboot has run and the prefix is fully initialised. Proton creates
+    # system32 as a symlink during prefix initialisation; copying into it before
+    # wineboot runs follows a dangling symlink and fails with:
+    #   cp: not writing through dangling symlink '…/system32/xinput1_3.dll'
+    # Step 3 calls install_xinput_dll() after wineboot completes.
   fi
 
     # --------------------------------------------------------------------------
@@ -4184,12 +4200,14 @@ trap _cleanup EXIT INT TERM HUP
 _launch_cmd=("${WINE}")
 
 if [[ -s "${_bootstrap_tmp}" ]]; then
-  # Launch via shm_launcher.exe: writes bootstrap blob to shared memory then
-  # the game process starts.
+  # Launch via shm_launcher.exe: writes bootstrap blob to shared memory,
+  # then starts the game executable. The wait below blocks until the game
+  # (and gamescope, if used) exits; the EXIT trap then runs _cleanup().
   if [[ "${USE_GAMESCOPE}" == "true" ]]; then
-    # setsid makes gamescope the session leader (SID == _GS_PID). pkill -s
-    # _GS_PID in _kill_session() then reaches the entire tree: gamescope,
-    # gamescope-reaper, wine, and all Wine children (winedevice.exe, etc.).
+    # setsid makes gamescope the session leader (SID == _GS_PID). The
+    # _kill_session() helper in _cleanup() sends SIGTERM to every process
+    # in that session — gamescope, its reaper child, Wine, and all Wine
+    # children (winedevice.exe, etc.) — then SIGKILL any survivors.
     # DBUS_SESSION_BUS_ADDRESS=/dev/null prevents gamescope from connecting
     # to an existing D-Bus session and interfering with the desktop.
     # shellcheck disable=SC2086
@@ -4198,29 +4216,35 @@ if [[ -s "${_bootstrap_tmp}" ]]; then
         "${_bootstrap_wine}" "${_shm_name}" "${_game_exe_wine}" \
         "${_game_args[@]}" &
     _GS_PID=$!
-    wait "${_GS_PID}"
+    wait "${_GS_PID}" || true
   else
-    # setsid makes wine the session leader so pkill -s _WINE_PID in
-    # _kill_session() reaches wine and all its children (winedevice.exe, etc.).
+    # setsid makes wine the session leader so _kill_session() reaches wine
+    # and all its children (winedevice.exe, etc.) on cleanup.
     setsid "${_launch_cmd[@]}" "${TOOLS_DIR}/shm_launcher.exe" \
       "${_bootstrap_wine}" "${_shm_name}" "${_game_exe_wine}" \
       "${_game_args[@]}" &
     _WINE_PID=$!
-    wait "${_WINE_PID}"
+    wait "${_WINE_PID}" || true
   fi
 else
-  # No bootstrap data available — launch the game directly without shared memory.
+  # No bootstrap data available — launch the game executable directly
+  # without shared memory (auth token is passed via command-line args).
   if [[ "${USE_GAMESCOPE}" == "true" ]]; then
     # shellcheck disable=SC2086
-    setsid env DBUS_SESSION_BUS_ADDRESS=/dev/null ${GS_ARGS} -- "${_launch_cmd[@]}" "${_game_exe}" "${_game_args[@]}" &
+    setsid env DBUS_SESSION_BUS_ADDRESS=/dev/null ${GS_ARGS} -- \
+      "${_launch_cmd[@]}" "${_game_exe}" "${_game_args[@]}" &
     _GS_PID=$!
-    wait "${_GS_PID}"
+    wait "${_GS_PID}" || true
   else
     setsid "${_launch_cmd[@]}" "${_game_exe}" "${_game_args[@]}" &
     _WINE_PID=$!
-    wait "${_WINE_PID}"
+    wait "${_WINE_PID}" || true
   fi
 fi
+
+# The EXIT trap (_cleanup) fires here automatically when this script exits,
+# killing any remaining gamescope/Wine processes and removing temp files.
+exit 0
 
 LAUNCHEOF
 
@@ -4313,49 +4337,55 @@ EOF
 
   if [[ "${skip_steam}" == "false" ]]; then
     local candidate
-  for candidate in \
-    "${HOME}/.steam/steam" \
-    "${HOME}/.local/share/Steam" \
-    "${HOME}/.var/app/com.valvesoftware.Steam/.local/share/Steam"; do
-    if [[ -d "${candidate}" ]]; then
-      steam_root="${candidate}"
-      break
-    fi
-  done
+    for candidate in \
+      "${HOME}/.steam/steam" \
+      "${HOME}/.local/share/Steam" \
+      "${HOME}/.var/app/com.valvesoftware.Steam/.local/share/Steam"; do
+      if [[ -d "${candidate}" ]]; then
+        steam_root="${candidate}"
+        break
+      fi
+    done
 
-  if [[ -z "${steam_root}" ]]; then
-    warn_msg "Steam not found — skipping Steam integration."
-    warn_msg "To add manually: add ${LAUNCHER_SCRIPT} as a non-Steam game in Steam."
-  elif ! command_exists python3; then
-    warn_msg "Python 3 not available — skipping Steam integration."
-  else
-    local steam_userdata="${steam_root}/userdata"
-    local steam_user=""
-    if [[ -d "${steam_userdata}" ]]; then
-      steam_user=$(
-        find "${steam_userdata}" -maxdepth 1 -mindepth 1 -type d \
-          -printf '%T@ %f\n' 2>/dev/null \
+    if [[ -z "${steam_root}" ]]; then
+      warn_msg "Steam not found — skipping Steam integration."
+      warn_msg "To add manually: add ${LAUNCHER_SCRIPT} as a non-Steam game in Steam."
+    elif ! command_exists python3; then
+      warn_msg "Python 3 not available — skipping Steam integration."
+    else
+      local steam_userdata="${steam_root}/userdata"
+      local steam_user=""
+      if [[ -d "${steam_userdata}" ]]; then
+        # Pick the most-recently-modified userdata subdirectory as the active
+        # Steam account. stat -c %Y is more portable than find -printf '%T@'.
+        steam_user=$(
+          find "${steam_userdata}" -maxdepth 1 -mindepth 1 -type d \
+            2>/dev/null \
+          | while IFS= read -r _d; do
+              printf '%s %s\n' "$(stat -c '%Y' "${_d}" 2>/dev/null || echo 0)" \
+                               "$(basename "${_d}")"
+            done \
           | sort -rn \
           | awk 'NR==1 {print $2}'
-      )
-    fi
+        )
+      fi
 
-    if [[ -z "${steam_user}" ]]; then
-      warn_msg "No Steam user account found — skipping Steam integration."
-    else
-      info_msg "Configuring Steam for user ${steam_user}..."
+      if [[ -z "${steam_user}" ]]; then
+        warn_msg "No Steam user account found — skipping Steam integration."
+      else
+        info_msg "Configuring Steam for user ${steam_user}..."
 
-      USER_CONFIG_DIR="${steam_userdata}/${steam_user}/config" \
-      LAUNCHER_ENV="${LAUNCHER_SCRIPT}" \
-      ICON_PATH_ENV="${ICON_PATH}" \
-      APP_NAME_ENV="${APP_NAME}" \
-      STEAM_GRID_PATH_ENV="${STEAM_GRID_PATH}" \
-      STEAM_HERO_PATH_ENV="${STEAM_HERO_PATH}" \
-      STEAM_LOGO_PATH_ENV="${STEAM_LOGO_PATH}" \
-      STEAM_WIDE_PATH_ENV="${STEAM_WIDE_PATH}" \
-      STEAM_HEADER_PATH_ENV="${STEAM_HEADER_PATH}" \
-      STEAM_ICO_PATH_ENV="${STEAM_ICO_PATH}" \
-      python3 - << 'PYEOF'
+        USER_CONFIG_DIR="${steam_userdata}/${steam_user}/config" \
+        LAUNCHER_ENV="${LAUNCHER_SCRIPT}" \
+        ICON_PATH_ENV="${ICON_PATH}" \
+        APP_NAME_ENV="${APP_NAME}" \
+        STEAM_GRID_PATH_ENV="${STEAM_GRID_PATH}" \
+        STEAM_HERO_PATH_ENV="${STEAM_HERO_PATH}" \
+        STEAM_LOGO_PATH_ENV="${STEAM_LOGO_PATH}" \
+        STEAM_WIDE_PATH_ENV="${STEAM_WIDE_PATH}" \
+        STEAM_HEADER_PATH_ENV="${STEAM_HEADER_PATH}" \
+        STEAM_ICO_PATH_ENV="${STEAM_ICO_PATH}" \
+        python3 - << 'PYEOF'
 """Adds Cluckers Central to Steam as a non-Steam shortcut."""
 
 import binascii
@@ -4560,18 +4590,20 @@ fi
 # --------------------------------------------------------------------------
   printf "\n"
   # --------------------------------------------------------------------------
-  # Step 11 — Game patches (Steam Deck, Controller, or Skip Movies)
+  # Step 11 — Game patches (Steam Deck or controller)
   #
-  # Applies patches to game config files for Steam Deck, controller, and movie prefs:
+  # Applies patches to game config files for Steam Deck or generic controller
+  # support:
   #
   #   1. RealmSystemSettings.ini — force fullscreen at 1280×800 (Steam Deck only).
   #
-  #   2. DefaultInput.ini / RealmInput.ini / BaseInput.ini — remove "Count
-  #      bXAxis" and "Count bYAxis" from mouse bindings. This prevents the
-  #      controller from switching to KB/M mode under Wine.
+  #   2. DefaultInput.ini / RealmInput.ini / BaseInput.ini — remove the
+  #      "Count bXAxis" and "Count bYAxis" mouse-axis counters. These counters
+  #      cause the engine to switch from gamepad mode to keyboard/mouse mode
+  #      under Wine whenever the mouse moves.
   #
-  #   4. controller_neptune_config.vdf — deploy the custom Steam Deck button
-  #      layout (Steam Deck only).
+  #   3. controller_neptune_config.vdf — deploy the custom Steam Deck button
+  #      layout template (Steam Deck only).
   #
   # Safe to run multiple times — all patches are idempotent.
   # --------------------------------------------------------------------------
