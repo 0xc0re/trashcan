@@ -577,6 +577,15 @@ install_sys_deps() {
     fi
   fi
 
+  # Ensure python3-pillow is installed for icon extraction (fallback for pip).
+  local pillow_pkg="python3-pillow"
+  [[ "${pkg_mgr}" == "pacman" ]] && pillow_pkg="python-pillow"
+  [[ "${pkg_mgr}" == "dnf" ]] && pillow_pkg="python3-pillow"
+  [[ "${pkg_mgr}" == "zypper" ]] && pillow_pkg="python3-Pillow"
+  if ! is_pkg_installed "${pkg_mgr}" "${pillow_pkg}"; then
+    to_install+=("${pillow_pkg}")
+  fi
+
   # Some distros provide wine/winetricks commands via package names that differ
   # from binary names. Ensure apt users still receive the full runtime stack.
   if [[ "${pkg_mgr}" == "apt" ]]; then
@@ -660,18 +669,22 @@ ensure_python_deps() {
     return 0
   fi
 
+  # Prefer 'python3 -m pip' as it is the most reliable way to invoke pip.
   local pip_cmd="python3 -m pip"
-  # Check if pip module is available.
-  if ! "${pip_cmd}" --version >/dev/null 2>&1; then
-    # Some distros don't include pip with python3. 
-    # install_sys_deps should have caught this, but we try ensurepip as a last resort.
+  
+  # Check if the pip module is actually available to python3.
+  if ! python3 -m pip --version >/dev/null 2>&1; then
     info_msg "pip module not found. Attempting to bootstrap via ensurepip..."
     python3 -m ensurepip --user >/dev/null 2>&1 || true
-  fi
-
-  if ! "${pip_cmd}" --version >/dev/null 2>&1; then
-    warn_msg "pip still not found — Python modules might be missing."
-    return 0
+    # If ensurepip failed, check if 'pip' or 'pip3' binaries exist as fallback.
+    if ! python3 -m pip --version >/dev/null 2>&1; then
+      if command_exists pip3; then pip_cmd="pip3";
+      elif command_exists pip; then pip_cmd="pip";
+      else
+        warn_msg "pip not found. Python modules might be missing."
+        return 0
+      fi
+    fi
   fi
 
   local -a py_deps=(Pillow blake3 vdf)
@@ -679,9 +692,11 @@ ensure_python_deps() {
 
   mkdir -p "${CLUCKERS_PYLIBS}"
 
+  # Add our private pylibs to PYTHONPATH for the check.
+  export PYTHONPATH="${CLUCKERS_PYLIBS}${PYTHONPATH:+:${PYTHONPATH}}"
+
   for dep in "${py_deps[@]}"; do
-    if ! PYTHONPATH="${CLUCKERS_PYLIBS}${PYTHONPATH:+:${PYTHONPATH}}" \
-         python3 -c "import ${dep}" >/dev/null 2>&1; then
+    if ! python3 -c "import ${dep}" >/dev/null 2>&1; then
       missing_deps+=("${dep}")
     fi
   done
@@ -694,7 +709,7 @@ ensure_python_deps() {
   info_msg "Installing missing Python modules: ${missing_deps[*]}..."
   # Use --target to install into our private pylibs directory.
   # This avoids PEP 668 issues and doesn't require sudo.
-  if ! "${pip_cmd}" install --upgrade --target "${CLUCKERS_PYLIBS}" "${missing_deps[@]}" >/dev/null 2>&1; then
+  if ! ${pip_cmd} install --upgrade --target "${CLUCKERS_PYLIBS}" "${missing_deps[@]}" >/dev/null 2>&1; then
     warn_msg "Failed to install Python modules via pip. Icon extraction or update verification may fail."
     return 1
   fi
@@ -3847,6 +3862,7 @@ XDLL_B64_EOF
       # .rsrc section directly using Python's struct module (stdlib only),
       # extract RT_GROUP_ICON (type 14) and RT_ICON (type 3) frames, assemble
       # a valid ICO file in memory, and save the largest frame as PNG.
+      PYTHONPATH="${CLUCKERS_PYLIBS}${PYTHONPATH:+:${PYTHONPATH}}" \
       python3 - "${_game_exe}" "${ICON_PATH}" \
                  "${ICON_DIR}/hicolor/256x256/apps/cluckers-central.png" << 'ICOEXT_EOF'
 import struct, sys, shutil, io
