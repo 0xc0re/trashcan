@@ -3778,12 +3778,32 @@ XDLL_B64_EOF
     mkdir -p "${ICON_DIR}"
     if curl ${CURL_FLAGS}f -o "${STEAM_ICO_PATH}" "${STEAM_ICO_URL}"; then
       ok_msg "Game ICO downloaded (used for Steam shortcut icon)."
-      # Extract the highest-quality image from the ICO as a PNG for the desktop icon.
-      # ImageMagick's convert picks the largest embedded image automatically.
-      if command_exists convert; then
-        convert "${STEAM_ICO_PATH}[0]" "${ICON_PATH}" 2>/dev/null \
-          && ok_msg "Game icon extracted as PNG for desktop shortcut." \
-          || warn_msg "convert failed — will fall back to portrait poster for desktop icon."
+      # Extract the highest-quality frame from the ICO as a PNG for the desktop icon.
+      # Uses Python/Pillow — already a required dependency — keeping this portable
+      # without needing ImageMagick. Pillow picks the largest embedded frame automatically.
+      python3 - "${STEAM_ICO_PATH}" "${ICON_PATH}" << 'ICO2PNG_EOF' || true
+import sys
+try:
+    from PIL import Image
+    ico, out = sys.argv[1], sys.argv[2]
+    img = Image.open(ico)
+    # Pick the largest frame by area from all sizes embedded in the ICO.
+    sizes = img.ico.sizes() if hasattr(img, 'ico') else [(img.width, img.height)]
+    best = max(sizes, key=lambda s: s[0] * s[1])
+    img.size = best
+    img = img.convert("RGBA")
+    img.save(out, "PNG")
+    print(f"[icon] Extracted {best[0]}x{best[1]} PNG from ICO.")
+except ImportError:
+    sys.exit(1)  # Pillow not available — caller falls through to JPG fallback
+except Exception as e:
+    print(f"[icon] ICO→PNG failed: {e}", file=sys.stderr)
+    sys.exit(1)
+ICO2PNG_EOF
+      if [[ -f "${ICON_PATH}" ]]; then
+        ok_msg "Game icon extracted as PNG for desktop shortcut."
+      else
+        warn_msg "Pillow not available or ICO extraction failed — will fall back to portrait poster."
       fi
     else
       warn_msg "Could not download game ICO — desktop icon will use fallback."
