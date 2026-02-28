@@ -3786,18 +3786,18 @@ import sys
 try:
     from PIL import Image
     ico, out = sys.argv[1], sys.argv[2]
+    # Open the ICO and pick the largest embedded frame by area.
     img = Image.open(ico)
-    # Pick the largest frame by area from all sizes embedded in the ICO.
-    sizes = img.ico.sizes() if hasattr(img, 'ico') else [(img.width, img.height)]
-    best = max(sizes, key=lambda s: s[0] * s[1])
-    img.size = best
+    if hasattr(img, 'ico') and img.ico.sizes():
+        best = max(img.ico.sizes(), key=lambda s: s[0] * s[1])
+        img = img.ico.getimage(best)
     img = img.convert("RGBA")
     img.save(out, "PNG")
-    print(f"[icon] Extracted {best[0]}x{best[1]} PNG from ICO.")
+    print(f"[icon] Saved {img.width}x{img.height} PNG from ICO.")
 except ImportError:
-    sys.exit(1)  # Pillow not available — caller falls through to JPG fallback
+    sys.exit(1)  # Pillow not available — falls through to JPG fallback
 except Exception as e:
-    print(f"[icon] ICO→PNG failed: {e}", file=sys.stderr)
+    print(f"[icon] ICO->PNG failed: {e}", file=sys.stderr)
     sys.exit(1)
 ICO2PNG_EOF
       if [[ -f "${ICON_PATH}" ]]; then
@@ -4266,38 +4266,35 @@ fi
 # When the game exits, shm_launcher.exe returns and wait completes, but Wine
 # background processes (winedevice.exe) and gamescope (+ its reaper) stay alive
 # until explicitly killed. We always clean them up here.
+#
+# Both gamescope and wine are launched via setsid, making them session leaders.
+# Their SID == their PID, so we kill by session: pkill -s PID sends the signal
+# to every process in that session regardless of how many process groups Wine
+# has spawned internally (winedevice.exe, services.exe, etc.).
+_kill_session() {
+  local pid="${1:-}"
+  [[ -z "${pid}" ]] && return
+  # SIGTERM the entire session, wait up to 3 s, then SIGKILL survivors.
+  pkill -TERM -s "${pid}" 2>/dev/null || true
+  local _w=0
+  while pkill -0 -s "${pid}" 2>/dev/null && (( _w < 30 )); do
+    sleep 0.1; (( _w++ )) || true
+  done
+  pkill -KILL -s "${pid}" 2>/dev/null || true
+}
+
 _cleanup() {
   # Remove the trap to prevent recursion.
   trap '' EXIT INT TERM HUP
 
-  # Kill the gamescope process GROUP (negative PID = whole group).
-  # gamescope sets itself as group leader, so wine and all its children are in
-  # the same group. SIGTERM first, then SIGKILL after 3 s for anything stubborn.
-  if [[ -n "${_GS_PID:-}" ]]; then
-    kill -- "-${_GS_PID}" 2>/dev/null || true
-    local _waited=0
-    while kill -0 "${_GS_PID}" 2>/dev/null && (( _waited < 30 )); do
-      sleep 0.1
-      (( _waited++ )) || true
-    done
-    kill -9 -- "-${_GS_PID}" 2>/dev/null || true
-  fi
+  # Kill the gamescope session (gamescope → reaper → wine → game).
+  _kill_session "${_GS_PID:-}"
 
-  # If wine was run directly (no gamescope), kill its process group.
-  # setsid made wine the group leader so kill -- -PID reaches winedevice.exe
-  # and all other Wine children without touching unrelated processes.
-  if [[ -n "${_WINE_PID:-}" ]]; then
-    kill -- "-${_WINE_PID}" 2>/dev/null || true
-    local _waited=0
-    while kill -0 "${_WINE_PID}" 2>/dev/null && (( _waited < 30 )); do
-      sleep 0.1
-      (( _waited++ )) || true
-    done
-    kill -9 -- "-${_WINE_PID}" 2>/dev/null || true
-  fi
+  # Kill the wine session for the non-gamescope path (wine → game → winedevice).
+  _kill_session "${_WINE_PID:-}"
 
-  # Shut down the wineserver for OUR prefix only — this flushes any pending
-  # registry writes and reaps winedevice.exe / services.exe cleanly.
+  # Shut down the wineserver for OUR prefix only — flushes pending registry
+  # writes and reaps any remaining winedevice.exe / services.exe.
   # Scoped by WINEPREFIX so other Wine prefixes/games are unaffected.
   WINEPREFIX="${WINEPREFIX}" "${WINESERVER}" -k 2>/dev/null || true
 
@@ -4322,22 +4319,22 @@ if [[ -s "${_bootstrap_tmp}" ]]; then
   # Launch via shm_launcher.exe: writes bootstrap blob to shared memory then
   # the game process starts.
   if [[ "${USE_GAMESCOPE}" == "true" ]]; then
-    # gamescope becomes process group leader; its children (wine, game) are in
-    # the same group so _cleanup can kill them all with kill -- -${_GS_PID}.
+    # Use setsid so gamescope becomes the session AND process group leader.
+    # This ensures kill -- -${_GS_PID} in _cleanup reaches the entire tree:
+    # gamescope → gamescope-reaper → wine → shm_launcher.exe → game.
     # DBUS_SESSION_BUS_ADDRESS=/dev/null prevents gamescope from connecting to
     # an existing D-Bus session and interfering with the desktop environment.
     # shellcheck disable=SC2086
-    DBUS_SESSION_BUS_ADDRESS=/dev/null ${GS_ARGS} -- \
+    setsid env DBUS_SESSION_BUS_ADDRESS=/dev/null ${GS_ARGS} -- \
       "${_launch_cmd[@]}" "${TOOLS_DIR}/shm_launcher.exe" \
         "${_bootstrap_wine}" "${_shm_name}" "${_game_exe_wine}" \
         "${_game_args[@]}" &
     _GS_PID=$!
     wait "${_GS_PID}"
   else
-    # Run wine in its own process group (setsid) so _cleanup can kill wine and
-    # all its children (winedevice, services.exe, the game) with kill -- -PID
-    # without touching any other processes in our shell session (e.g. Steam's
-    # reaper, pressure-vessel, or other games).
+    # Run wine in its own session (setsid) so _cleanup can kill wine and all
+    # its children (winedevice.exe, services.exe, the game) with kill -- -PID
+    # without touching any other processes in our shell session.
     setsid "${_launch_cmd[@]}" "${TOOLS_DIR}/shm_launcher.exe" \
       "${_bootstrap_wine}" "${_shm_name}" "${_game_exe_wine}" \
       "${_game_args[@]}" &
@@ -4348,7 +4345,7 @@ else
   # No bootstrap data available — launch the game directly without shared memory.
   if [[ "${USE_GAMESCOPE}" == "true" ]]; then
     # shellcheck disable=SC2086
-    DBUS_SESSION_BUS_ADDRESS=/dev/null ${GS_ARGS} -- "${_launch_cmd[@]}" "${_game_exe}" "${_game_args[@]}" &
+    setsid env DBUS_SESSION_BUS_ADDRESS=/dev/null ${GS_ARGS} -- "${_launch_cmd[@]}" "${_game_exe}" "${_game_args[@]}" &
     _GS_PID=$!
     wait "${_GS_PID}"
   else
