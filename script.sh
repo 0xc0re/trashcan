@@ -205,18 +205,27 @@ readonly REALM_ROYALE_APPID="813820"
 readonly STEAM_ASSET_BASE="https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${REALM_ROYALE_APPID}"
 
 # High-quality art assets fetched from the Steam CDN.
-# All URLs and their Steam slot names verified directly from img-sauce.
+# All URLs and sizes verified directly from the community assets source.
 #
-# img-sauce label        → filename                    Steam grid/ slot
-# ─────────────────────────────────────────────────────────────────────
-# library_capsule     2x → library_600x900_2x.jpg      portrait poster  (suffix: p)
-# library_hero        2x → library_hero_2x.jpg          hero background  (suffix: _hero)
-# logo                2x → logo_2x.png                  logo overlay     (suffix: _logo)
-# main_capsule           → capsule_616x353.jpg           wide capsule     (suffix: empty)
-# header                 → header.jpg                    store header     (suffix: _header)
-# community_icon         → 068664cf...jpg               game icon        (suffix: _icon)
+# community assets label  → filename                    Steam grid/ slot / use
+# ───────────────────────────────────────────────────────────────────────────
+# library_capsule      2x → library_600x900_2x.jpg      portrait poster  (suffix: p)
+#                                                         600×900; also used as desktop icon
+# library_hero         2x → library_hero_2x.jpg          hero background  (suffix: _hero)
+#                                                         3840×1240 (2x HiDPI)
+# logo                 2x → logo_2x.png                  logo banner      (suffix: _logo)
+#                                                         1280×720 with background; NOT transparent
+# main_capsule            → capsule_616x353.jpg           wide cover       (suffix: empty)
+#                                                         616×353
+# header                  → header.jpg                    store header     (suffix: _header)
+#                                                         460×215
+# community_icon (ico)    → c59e5de...ico                Steam shortcut icon (32×32 ICO)
+#                                                         Used as shortcuts.vdf "icon" field —
+#                                                         ICO format is natively read by Steam
+#                                                         and Linux desktop environments.
+# community_icon (jpg)    → 068664cf...jpg               32×32 JPG — too small, not used
 #
-# logo_position from img-sauce (written verbatim to localconfig.vdf):
+# logo_position from community assets (written verbatim to localconfig.vdf):
 #   pinned_position: BottomLeft
 #   width_pct:  36.44186046511628
 #   height_pct: 100
@@ -225,25 +234,27 @@ readonly STEAM_GRID_URL="${STEAM_ASSET_BASE}/library_600x900_2x.jpg?t=1739811771
 readonly STEAM_HERO_URL="${STEAM_ASSET_BASE}/library_hero_2x.jpg?t=1739811771"
 readonly STEAM_WIDE_URL="${STEAM_ASSET_BASE}/capsule_616x353.jpg?t=1739811771"
 readonly STEAM_HEADER_URL="${STEAM_ASSET_BASE}/header.jpg?t=1739811771"
-# community_icon: the designated game icon from Steam's own asset metadata.
-# Hash from img-sauce: 068664cf452a9f2388cf1ccf1f239fc967ff9629.jpg
-# This is what Steam uses as the game's icon in the community and library.
-readonly STEAM_ICON_URL="https://shared.fastly.steamstatic.com/community_assets/images/apps/813820/068664cf452a9f2388cf1ccf1f239fc967ff9629.jpg"
+# Game icon: the 32×32 ICO from Steam's community assets — the authoritative
+# icon Steam itself uses for this game. ICO is natively handled by Steam and
+# Linux desktops (XDG icon theme). Used as the shortcuts.vdf "icon" field.
+# Hash from community assets: c59e5deabf96d228085fe122772251dfa526b9e2.ico
+readonly STEAM_ICO_URL="https://shared.fastly.steamstatic.com/community_assets/images/apps/813820/c59e5deabf96d228085fe122772251dfa526b9e2.ico"
+# community_icon jpg: 32×32 thumbnail — too small to use, not downloaded.
 
 readonly STEAM_ASSETS_DIR="${CLUCKERS_ROOT}/assets"
 # Asset paths — filenames match their purpose for clarity.
-# Sources verified against img-sauce (see img-sauce file in this repo):
-#   library_capsule  → library_600x900_2x.jpg  (portrait poster, 600×900)
-#   library_hero     → library_hero_2x.jpg      (hero background, 1920×620)
-#   logo             → logo_2x.png              (transparent overlay logo)
-#   main_capsule     → capsule_616x353.jpg       (wide/horizontal capsule)
-#   community_icon   → 068664cf...jpg            (designated game icon)
+# Sizes verified against community assets source:
+#   library_capsule  → library_600x900_2x.jpg  (portrait poster, 600×900; desktop icon)
+#   library_hero     → library_hero_2x.jpg      (hero background, 3840×1240)
+#   logo             → logo_2x.png              (logo banner 1280×720 with background; grid _logo slot)
+#   main_capsule     → capsule_616x353.jpg       (wide cover, 616×353)
+#   community_icon   → c59e5de...ico            (32×32 ICO; Steam shortcut icon field)
 readonly STEAM_LOGO_PATH="${STEAM_ASSETS_DIR}/logo.png"
 readonly STEAM_GRID_PATH="${STEAM_ASSETS_DIR}/grid.jpg"
 readonly STEAM_HERO_PATH="${STEAM_ASSETS_DIR}/hero.jpg"
 readonly STEAM_WIDE_PATH="${STEAM_ASSETS_DIR}/wide.jpg"
 readonly STEAM_HEADER_PATH="${STEAM_ASSETS_DIR}/header.jpg"
-readonly STEAM_ICON_PATH="${STEAM_ASSETS_DIR}/icon.jpg"
+readonly STEAM_ICO_PATH="${STEAM_ASSETS_DIR}/icon.ico"
 
 # Directory where the two helper .exe / .dll binaries are stored after setup.
 readonly TOOLS_DIR="${HOME}/.local/share/cluckers-central/tools"
@@ -1323,10 +1334,10 @@ grid_dir = os.path.join(USER_CONFIG_DIR, "grid")
 removed = 0
 # All suffix+extension combinations written by the installer.
 art_names = [
-    "p.jpg", "p.png",       # Vertical poster
-    ".jpg",  ".png",        # Horizontal grid
-    "_hero.jpg", "_hero.png",  # Hero background
-    "_logo.png", "_logo.jpg",  # Clear logo
+    "p.jpg", "p.png",          # Vertical poster
+    ".jpg",  ".png",            # Horizontal grid / wide cover
+    "_hero.jpg", "_hero.png",   # Hero background
+    "_logo.png", "_logo.jpg",   # Logo banner
     "_header.jpg", "_header.png",  # Small header
 ]
 for grid_id in grid_appids:
@@ -3750,14 +3761,14 @@ XDLL_B64_EOF
     curl ${CURL_FLAGS}f -o "${STEAM_WIDE_PATH}"   "${STEAM_WIDE_URL}"   || true
     curl ${CURL_FLAGS}f -o "${STEAM_HEADER_PATH}" "${STEAM_HEADER_URL}" || true
 
-    # Download the community_icon — the image Steam labels as the game icon.
-    # We keep it for the Steam shortcut icon field (shortcuts.vdf "icon" key).
-    curl ${CURL_FLAGS}f -o "${STEAM_ICON_PATH}" "${STEAM_ICON_URL}" || true
+    # Download the game's ICO from Steam's community assets (32×32, authoritative
+    # game icon). Used as the shortcuts.vdf "icon" field — Steam and Linux
+    # desktops both natively handle ICO format.
+    curl ${CURL_FLAGS}f -o "${STEAM_ICO_PATH}" "${STEAM_ICO_URL}" || true
 
     # Use the portrait poster (library_600x900_2x.jpg, already downloaded as
-    # STEAM_GRID_PATH) as the desktop .desktop icon. It is 198 KB of high-res
-    # key art that scales well at any size. The community_icon jpg is only
-    # 816 bytes — too small for crisp desktop display.
+    # STEAM_GRID_PATH) as the desktop .desktop icon. It is high-res key art
+    # (600×900) that scales well at any size.
     if [[ -f "${STEAM_GRID_PATH}" ]]; then
       cp "${STEAM_GRID_PATH}" "${ICON_PATH}"
       ok_msg "High-quality Steam assets downloaded."
@@ -3847,11 +3858,16 @@ export WINEARCH="win64"
 # Suppress noisy Wine debug output. Set to "" to see full Wine diagnostics.
 export WINEDEBUG="-all"
 
-# dxgi=n,b: use DXVK's dxgi instead of Wine's built-in (required for DX11 performance).
-# xinput1_3=n: use our custom xinput remapper installed in Step 6.
+# dxgi=n,b:      use DXVK's dxgi instead of Wine's built-in (required for DX11 performance).
+# d3d11=n,b:    use DXVK's d3d11 — prevents the "file not found" ntdll crash caused by
+#               Wine's stub d3d11 calling missing ntdll entry points when the game calls
+#               Direct3D 11. Without this, the game crashes on startup with an ntdll error.
+# d3d10core=n,b: use DXVK's d3d10 implementation alongside d3d11 (they share the same
+#               DXVK library; both must be set native or neither will work).
+# xinput1_3=n:  use our custom xinput remapper installed in Step 6.
 # Source: https://github.com/0xc0re/cluckers/blob/master/internal/launch/process.go
 $(if [[ "${controller_mode}" == "true" || "${steam_deck}" == "true" ]]; then
-  printf 'export WINEDLLOVERRIDES="dxgi=n;xinput1_3=n"\n'
+  printf 'export WINEDLLOVERRIDES="dxgi=n,b;d3d11=n,b;d3d10core=n,b;xinput1_3=n"\n'
   # SDL_HINT_JOYSTICK_HIDAPI — when set to "0" disables SDL's HIDAPI driver for
   # all joysticks. Without this, Wine's winebus.sys and SDL's HIDAPI layer both
   # enumerate the same physical device, causing duplicate axis events and phantom
@@ -3892,7 +3908,7 @@ done
 [[ -n "${_sdl_db}" ]] && export SDL_GAMECONTROLLERCONFIG_FILE="${_sdl_db}"
 SDLEOF
 else
-  printf 'export WINEDLLOVERRIDES="dxgi=n"\n'
+  printf 'export WINEDLLOVERRIDES="dxgi=n,b;d3d11=n,b;d3d10core=n,b"\n'
 fi)
 
 # Wine binary and optional Proton script resolved by find_wine() at setup time.
@@ -4388,7 +4404,7 @@ EOF
       STEAM_LOGO_PATH_ENV="${STEAM_LOGO_PATH}" \
       STEAM_WIDE_PATH_ENV="${STEAM_WIDE_PATH}" \
       STEAM_HEADER_PATH_ENV="${STEAM_HEADER_PATH}" \
-      STEAM_ICON_PATH_ENV="${STEAM_ICON_PATH}" \
+      STEAM_ICO_PATH_ENV="${STEAM_ICO_PATH}" \
       python3 - << 'PYEOF'
 """Adds Cluckers Central to Steam as a non-Steam shortcut."""
 
@@ -4403,12 +4419,12 @@ USER_CONFIG_DIR = os.environ["USER_CONFIG_DIR"]
 LAUNCHER        = os.environ["LAUNCHER_ENV"]
 ICON_PATH       = os.environ["ICON_PATH_ENV"]
 APP_NAME        = os.environ["APP_NAME_ENV"]
-STEAM_GRID      = os.environ["STEAM_GRID_PATH_ENV"]
-STEAM_HERO      = os.environ["STEAM_HERO_PATH_ENV"]
-STEAM_LOGO      = os.environ["STEAM_LOGO_PATH_ENV"]
-STEAM_WIDE      = os.environ["STEAM_WIDE_PATH_ENV"]
-STEAM_HEADER    = os.environ["STEAM_HEADER_PATH_ENV"]
-STEAM_ICON      = os.environ.get("STEAM_ICON_PATH_ENV", "")
+STEAM_GRID      = os.environ.get("STEAM_GRID_PATH_ENV", "")
+STEAM_HERO      = os.environ.get("STEAM_HERO_PATH_ENV", "")
+STEAM_LOGO      = os.environ.get("STEAM_LOGO_PATH_ENV", "")
+STEAM_WIDE      = os.environ.get("STEAM_WIDE_PATH_ENV", "")
+STEAM_HEADER    = os.environ.get("STEAM_HEADER_PATH_ENV", "")
+STEAM_ICO       = os.environ.get("STEAM_ICO_PATH_ENV", "")
 
 _OK   = "  [\033[0;32m OK \033[0m]"
 _WARN = "  [\033[1;33mWARN\033[0m]"
@@ -4459,10 +4475,13 @@ try:
     # Source: Valve's internal format, reproduced by steam-rom-manager.
     quoted_exe = f'"{LAUNCHER}"'
     start_dir  = f'"{os.path.dirname(LAUNCHER)}"'
-    # Use the community_icon jpg as the Steam shortcut icon field.
-    # This is what Steam labels as "community_icon" in its asset metadata.
-    # The desktop .desktop icon (ICON_PATH) uses the larger portrait poster.
-    icon_path = STEAM_ICON if STEAM_ICON and os.path.exists(STEAM_ICON) else ICON_PATH
+    # Use the 32×32 ICO from Steam's community assets as the Steam shortcut icon.
+    # This is the authoritative game icon Steam itself uses — ICO is natively
+    # read by both Steam (shortcuts.vdf "icon" field) and Linux desktop
+    # environments (XDG icon theme). Falls back to the portrait poster if the
+    # ICO was not downloaded successfully.
+    # The desktop .desktop icon (ICON_PATH) uses the portrait poster (600×900).
+    icon_path = STEAM_ICO if STEAM_ICO and os.path.exists(STEAM_ICO) else ICON_PATH
     # LaunchOptions: leave empty — the launcher script handles gamescope
     # and all launch arguments internally. Putting gamescope here would cause
     # it to run twice when launched from Steam (once from Steam's LaunchOptions
@@ -4509,41 +4528,49 @@ try:
     #
     # Suffix conventions (verified against Steam client source and community):
     #   p        — Vertical grid / portrait poster  (600×900)
-    #   (none)   — Horizontal grid / landscape      (920×430)
-    #   _hero    — Library hero / banner background (1920×620)
-    #   _logo    — Transparent clear logo           (any, PNG preferred)
+    #   (none)   — Horizontal grid / wide cover     (616×353)
+    #   _hero    — Library hero / banner background (3840×1240 for 2x)
+    #   _logo    — Logo banner                      (1280×720 with background)
     #   _header  — Small header / capsule           (460×215)
     #
     # Sources:
     #   https://www.steamgriddb.com/blog/backgrounds-and-logos
     #   https://github.com/nicowillis/steam-rom-manager
     #   https://github.com/lutris/lutris/blob/master/lutris/services/steam.py
-    grid_dir = os.path.join(USER_CONFIG_DIR, "..", "grid")
+    # grid/ lives inside config/, not one level up — USER_CONFIG_DIR is
+    # already userdata/<uid>/config so grid/ is a direct subdirectory.
+    grid_dir = os.path.join(USER_CONFIG_DIR, "grid")
     os.makedirs(grid_dir, exist_ok=True)
 
-    # Artwork suffix mapping — verified from img-sauce labels.
-    # img-sauce label  → Steam grid/ suffix → source file
-    # library_capsule  → p                  → library_600x900_2x.jpg
-    # library_hero     → _hero              → library_hero_2x.jpg
-    # logo             → _logo              → logo_2x.png
+    # Artwork suffix mapping — verified from steam-rom-manager source and img-sauce.
+    # Steam stores non-Steam game artwork under two ID formats (both written so
+    # the correct image appears regardless of Steam client version):
+    #
+    #   unsigned_id  = crc32(exe+name) | 0x80000000   — legacy 32-bit prefix
+    #   long_id      = (unsigned_id << 32) | 0x02000000 — modern 64-bit prefix
+    #                  (used by Steam post-2019 / Big Picture / Steam Deck)
+    #
+    # community assets label → grid/ suffix → source file
+    # library_capsule     2x → p            → library_600x900_2x.jpg  (600×900 portrait)
+    # main_capsule           → (empty)      → capsule_616x353.jpg     (616×353 wide cover)
+    # library_hero        2x → _hero        → library_hero_2x.jpg     (3840×1240 banner)
+    # logo                2x → _logo        → logo_2x.png             (1280×720 logo banner)
+    # header                 → _header      → header.jpg              (460×215 header)
     art_map = {
-        STEAM_GRID:   "p",      # library_capsule  (600×900 portrait poster)
-        STEAM_HERO:   "_hero",  # library_hero     (1920×620 background)
-        STEAM_LOGO:   "_logo",  # logo             (transparent overlay)
+        STEAM_GRID:   "p",       # portrait poster  (600×900)
+        STEAM_WIDE:   "",        # wide cover       (616×353)
+        STEAM_HERO:   "_hero",   # hero background  (3840×1240)
+        STEAM_LOGO:   "_logo",   # logo banner      (1280×720)
+        STEAM_HEADER: "_header", # header tile      (460×215)
     }
 
-    # Steam uses the 32-bit unsigned CRC as the grid/ filename prefix.
-    # Older Steam versions use unsigned_id directly.
-    # Newer Steam versions (post-2019) also look for the long_id format.
-    # We write both so artwork appears regardless of Steam client version.
+    # Write artwork for both ID formats so the images appear in all Steam versions.
     long_id = (unsigned_id << 32) | 0x02000000
-    grid_ids = [str(unsigned_id), str(long_id)]
-
-    for src, suffix in art_map.items():
-        if not os.path.exists(src):
-            continue
-        ext = os.path.splitext(src)[1]
-        for grid_id in grid_ids:
+    for grid_id in (str(unsigned_id), str(long_id)):
+        for src, suffix in art_map.items():
+            if not src or not os.path.exists(src):
+                continue
+            ext = os.path.splitext(src)[1]
             dest = os.path.join(grid_dir, f"{grid_id}{suffix}{ext}")
             try:
                 shutil.copy2(src, dest)
