@@ -2703,35 +2703,60 @@ main() {
 
   # Use the detected Proton script if available (works for SLR and non-SLR).
   if [[ -n "${real_proton_script}" ]] && [[ -x "${real_proton_script}" ]]; then
-    # winetricks requires a single binary path for WINE. We create small
-    # wrappers named 'wine' and 'wine64' so winetricks works with any Proton build.
+    # For maintenance tasks (wineboot, winetricks) we MUST NOT call 'proton run'.
+    # The 'proton' script launches the Steam Linux Runtime (pressure-vessel)
+    # container, which requires Steam to be running and causes Steam to open
+    # unexpectedly during install. This is wrong for setup tasks.
+    #
+    # Instead we call the Wine binary directly, with the Proton build's own
+    # library paths prepended to LD_LIBRARY_PATH. This is the same approach
+    # used by Heroic Games Launcher, Lutris, and Bottles for Proton maintenance.
+    # The libraries in files/lib64 and files/lib provide the same DLLs/overrides
+    # that the container would supply, so wineboot and winetricks work correctly.
+    local proton_root
+    proton_root="$(dirname "${real_proton_script}")"
+    local proton_lib64="${proton_root}/files/lib64"
+    local proton_lib="${proton_root}/files/lib"
+
+    # Build the wrapper's LD_LIBRARY_PATH, prepending Proton's bundled libs so
+    # that dlopen() picks up Proton's custom DXVK/VKD3D/FAudio/etc. over system
+    # versions. This replicates what pressure-vessel does without the container.
+    local proton_ld_path="${proton_lib64}:${proton_lib}"
+
     local wrapper_dir="${CLUCKERS_ROOT}/tools"
     mkdir -p "${wrapper_dir}"
     maint_wine="${wrapper_dir}/wine"
+
     cat << EOF > "${maint_wine}"
 #!/usr/bin/env bash
-export STEAM_COMPAT_CLIENT_INSTALL_PATH="\${STEAM_COMPAT_CLIENT_INSTALL_PATH:-\${HOME}/.steam/steam}"
-# Proton expects STEAM_COMPAT_DATA_PATH to be the parent of the 'pfx' folder.
-export STEAM_COMPAT_DATA_PATH="\${STEAM_COMPAT_DATA_PATH:-\$(dirname "\${WINEPREFIX}")}"
-exec "${real_proton_script}" run "\$@"
+# Maintenance Wine wrapper: calls Proton's wine64 binary directly, bypassing
+# the Steam Linux Runtime container. This avoids launching Steam during setup.
+export WINEPREFIX="\${WINEPREFIX}"
+export LD_LIBRARY_PATH="${proton_ld_path}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+export WINEFSYNC=1
+export WINEESYNC=1
+exec "${real_wine_path}" "\$@"
 EOF
     cp "${maint_wine}" "${wrapper_dir}/wine64"
     chmod +x "${maint_wine}" "${wrapper_dir}/wine64"
 
-    # Create a wineserver wrapper as well to ensure winetricks uses the correct one.
+    # Wineserver wrapper: same direct-binary approach.
     maint_server="${wrapper_dir}/wineserver"
     cat << EOF > "${maint_server}"
 #!/usr/bin/env bash
-export STEAM_COMPAT_CLIENT_INSTALL_PATH="\${STEAM_COMPAT_CLIENT_INSTALL_PATH:-\${HOME}/.steam/steam}"
-export STEAM_COMPAT_DATA_PATH="\${STEAM_COMPAT_DATA_PATH:-\$(dirname "\${WINEPREFIX}")}"
-exec "${real_proton_script}" run "${real_wineserver}" "\$@"
+# Maintenance wineserver wrapper: direct binary, no SLR container.
+export WINEPREFIX="\${WINEPREFIX}"
+export LD_LIBRARY_PATH="${proton_ld_path}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+export WINEFSYNC=1
+export WINEESYNC=1
+exec "${real_wineserver}" "\$@"
 EOF
     chmod +x "${maint_server}"
 
     is_proton_maint="true"
-    info_msg "Using Proton wrappers for maintenance: ${real_proton_script}"
+    info_msg "Using Proton Wine directly for maintenance (no SLR container): ${real_wine_path}"
     local maint_ver
-    maint_ver=$("${maint_wine}" --version 2>/dev/null || echo "unknown")
+    maint_ver=$("${real_wine_path}" --version 2>/dev/null || echo "unknown")
     info_msg "Maintenance Wine version: ${maint_ver}"
   elif [[ -n "${real_wine_path}" ]]; then
     # Use the detected Wine binary directly. All Proton builds that have a
