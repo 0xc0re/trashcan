@@ -3794,29 +3794,12 @@ XDLL_B64_EOF
       warn_msg "unzip not found — desktop icon cannot be installed."
       warn_msg "Install unzip: sudo apt install unzip  (or your distro's equivalent)"
     else
-      # The EXE stores each icon frame as a separate .rsrc/ICON/<id>.ico
-      # entry. Entry 1.ico may be only 32x32. List all entries and extract
-      # the one with the largest file size — that is the highest resolution.
-      local _best_ico="" _best_size=0 _entry _sz
-      while IFS= read -r _entry; do
-        [[ -z "${_entry}" ]] && continue
-        unzip -p "${_game_exe}" "${_entry}" > "${_exe_ico}.tmp" 2>/dev/null \
-          || { rm -f "${_exe_ico}.tmp"; continue; }
-        _sz=$(stat -c '%s' "${_exe_ico}.tmp" 2>/dev/null || echo 0)
-        if (( _sz > _best_size )); then
-          _best_size=${_sz}
-          _best_ico="${_entry}"
-          mv "${_exe_ico}.tmp" "${_exe_ico}"
-        else
-          rm -f "${_exe_ico}.tmp"
-        fi
-      done < <(unzip -l "${_game_exe}" 2>/dev/null \
-               | awk '{print $NF}' \
-               | grep -E '\.rsrc/ICON/[0-9]+\.ico$')
-
-      if [[ -s "${_exe_ico}" ]]; then
-        ok_msg "Game icon extracted from EXE (${_best_ico:-unknown}, ${_best_size} bytes)."
-        # Convert the extracted single-frame ICO to PNG using Pillow.
+      # Extract .rsrc/ICON/1.ico from the game EXE. All icon frames in this
+      # EXE are the same size, so 1.ico is sufficient.
+      if unzip -p "${_game_exe}" '.rsrc/ICON/1.ico' > "${_exe_ico}" 2>/dev/null \
+         && [[ -s "${_exe_ico}" ]]; then
+        ok_msg "Game icon extracted from EXE (.rsrc/ICON/1.ico)."
+        # Convert the ICO to PNG using Pillow.
         python3 - "${_exe_ico}" "${ICON_PATH}" \
                    "${ICON_DIR}/hicolor/256x256/apps/cluckers-central.png" << 'ICO2PNG_EOF'
 import sys, shutil
@@ -3824,8 +3807,7 @@ from PIL import Image
 ico  = sys.argv[1]
 flat = sys.argv[2]
 hi   = sys.argv[3]
-# Each .rsrc/ICON/<id>.ico is a single-frame DIB — open and convert directly.
-img = Image.open(ico).convert("RGBA")
+img  = Image.open(ico).convert("RGBA")
 img.save(flat, "PNG")
 shutil.copy2(flat, hi)
 print(f"[icon] {img.width}x{img.height} PNG installed.")
@@ -4365,15 +4347,13 @@ if [[ -s "${_bootstrap_tmp}" ]]; then
         "${_bootstrap_wine}" "${_shm_name}" "${_game_exe_wine}" \
         "${_game_args[@]}" &
     _GS_PID=$!
-    # Wine and winedevice.exe run as grandchildren of gamescope via
-    # gamescopereaper. They may form their own process group. Setting
-    # _WINE_PID = _GS_PID ensures _cleanup() sweeps the whole tree via
-    # both session kill and process group kill from the same root PID.
     _WINE_PID=${_GS_PID}
     wait "${_GS_PID}" || true
+    # Gamescope does not exit when the game exits — it stays alive waiting
+    # for another Wayland client. Explicitly kill it and its whole process
+    # group (gamescopereaper, gamescope-wl) after wait returns.
+    _kill_session "${_GS_PID}"
   else
-    # setsid makes wine the session leader so _kill_session() reaches wine
-    # and all its children (winedevice.exe, etc.) on cleanup.
     setsid "${_launch_cmd[@]}" "${TOOLS_DIR}/shm_launcher.exe" \
       "${_bootstrap_wine}" "${_shm_name}" "${_game_exe_wine}" \
       "${_game_args[@]}" &
@@ -4381,8 +4361,6 @@ if [[ -s "${_bootstrap_tmp}" ]]; then
     wait "${_WINE_PID}" || true
   fi
 else
-  # No bootstrap data available — launch the game executable directly
-  # without shared memory (auth token is passed via command-line args).
   if [[ "${USE_GAMESCOPE}" == "true" ]]; then
     # shellcheck disable=SC2086
     setsid env DBUS_SESSION_BUS_ADDRESS=/dev/null ${GS_ARGS} -- \
@@ -4390,6 +4368,7 @@ else
     _GS_PID=$!
     _WINE_PID=${_GS_PID}
     wait "${_GS_PID}" || true
+    _kill_session "${_GS_PID}"
   else
     setsid "${_launch_cmd[@]}" "${_game_exe}" "${_game_args[@]}" &
     _WINE_PID=$!
