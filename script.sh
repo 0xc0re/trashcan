@@ -3874,7 +3874,7 @@ import struct, sys, shutil, io
 from PIL import Image
 
 def extract_pe_group_icon(path, group_id=1):
-    """Parse a Windows PE binary and extract icon group group_id as ICO bytes."""
+    """Parse a Windows PE binary and extract an icon group as ICO bytes."""
     with open(path, 'rb') as f:
         data = f.read()
     if data[:2] != b'MZ':
@@ -3908,9 +3908,15 @@ def extract_pe_group_icon(path, group_id=1):
                  bool(struct.unpack_from('<I', data, off+16+i*8+4)[0] & 0x80000000))
                 for i in range(named + ident)]
     def get_res(type_id, res_id):
-        td = next((rsrc_foff+o for i,o,s in read_dir(rsrc_foff) if i==type_id and s), None)
+        root_dir = read_dir(rsrc_foff)
+        td = next((rsrc_foff+o for i,o,s in root_dir if i==type_id and s), None)
         if td is None: return None
-        id_dir = next((rsrc_foff+o for i,o,s in read_dir(td) if i==res_id and s), None)
+        type_dir = read_dir(td)
+        # If requested res_id not found, pick the first available ID
+        if not any(i == res_id for i,o,s in type_dir):
+            if not type_dir: return None
+            res_id = type_dir[0][0]
+        id_dir = next((rsrc_foff+o for i,o,s in type_dir if i==res_id and s), None)
         if id_dir is None: return None
         langs = read_dir(id_dir)
         if not langs: return None
@@ -3921,7 +3927,7 @@ def extract_pe_group_icon(path, group_id=1):
         size = struct.unpack_from('<I', data, eoff+4)[0]
         return data[rva2off(rva):rva2off(rva)+size]
     grp = get_res(14, group_id)
-    if not grp: raise ValueError(f"RT_GROUP_ICON {group_id} not found")
+    if not grp: raise ValueError("No icon groups found in .rsrc")
     count = struct.unpack_from('<H', grp, 4)[0]
     frames = []
     for i in range(count):
