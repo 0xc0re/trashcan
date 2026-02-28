@@ -3757,184 +3757,209 @@ XDLL_B64_EOF
 
     # Download the game's ICO from Steam's community assets (32×32, authoritative
     # icon Steam itself uses). The ICO is kept for the Steam shortcuts.vdf "icon"
-    # Install the game icon into the XDG hicolor theme so desktop environments
-    # (GNOME, KDE, XFCE) find it reliably by name. Icons must live in a theme
-    # subdirectory — an absolute path to ~/.local/share/icons/ is not reliably
-    # picked up by all desktop environments. We use Icon=cluckers-central (name
-    # only) in the .desktop file so the DE resolves it through the theme cache.
+    # Install the game icon into the XDG hicolor icon theme so desktop
+    # environments (GNOME, KDE, XFCE) find it reliably by name. Icons must
+    # live in a theme subdirectory — the DE resolves Icon=cluckers-central
+    # (no path, no extension) through the theme cache at runtime.
     #
-    # Icon source priority (best quality first):
-    #   1. 1.ico embedded in the game EXE (.rsrc/ICON/1.ico extracted via unzip).
-    #      The game binary contains a multi-frame ICO with sizes up to 256×256,
-    #      giving a crisp native icon at every size slot.
-    #   2. Steam CDN community ICO (32×32 single frame, fallback).
-    #   3. Portrait poster JPG (last resort if all ICO sources fail).
+    # Icon source: RT_GROUP_ICON resource 1 extracted from the game EXE.
+    # Windows PE executables embed icon groups in a .rsrc resource section.
+    # We parse the PE binary directly in Python (no external tools required):
+    #   RT_GROUP_ICON (type 14, id 1) — manifest listing all frame sizes.
+    #   RT_ICON       (type 3)        — raw DIB bitmap data for each frame.
+    # The game EXE contains multiple frames (32×32, 48×48, 256×256, etc.),
+    # so we get a crisp native icon at every size slot without any upscaling.
     #
-    # From the chosen ICO we install:
-    #   hicolor/32x32/apps/cluckers-central.png  — small taskbar/panel icon.
-    #   hicolor/256x256/apps/cluckers-central.png — large grid/HiDPI icon.
-    #   ICON_PATH (flat)                          — absolute-path fallback for
-    #                                               older XFCE / Cinnamon.
+    # We install:
+    #   hicolor/32x32/apps/cluckers-central.png  — taskbar / panel icon.
+    #   hicolor/256x256/apps/cluckers-central.png — HiDPI application grid.
+    #   ICON_PATH (flat PNG)                      — absolute-path fallback
+    #     for desktop environments that resolve Icon= by path before theme.
+    #
+    # The Steam CDN ICO (STEAM_ICO_PATH) is still downloaded because Steam's
+    # shortcuts.vdf requires a path to an ICO file in its "icon" field.
     local _hicolor_32="${ICON_DIR}/hicolor/32x32/apps"
     local _hicolor_256="${ICON_DIR}/hicolor/256x256/apps"
-    local _icon_name="cluckers-central"  # matches Icon= in .desktop (no path, no ext)
+    local _icon_name="cluckers-central"  # matches Icon= in .desktop
     mkdir -p "${_hicolor_32}" "${_hicolor_256}"
 
-    # --- Step A: extract 1.ico from the game EXE using unzip ----------------
-    # Windows PE executables store resources as a zip-like archive when built
-    # with certain toolchains. The game EXE embeds its icon at:
-    #   .rsrc/ICON/1.ico
-    # unzip can read this directly — no Wine or PE parser required.
-    local _game_exe="${GAME_DIR}/${GAME_EXE_REL}"
-    local _exe_ico_tmp="${STEAM_ASSETS_DIR}/icon_exe.ico"
-    local _exe_ico_ok="false"
-    if [[ -f "${_game_exe}" ]] && command_exists unzip; then
-      # -p: pipe to stdout. -j: junk paths. Redirect to file.
-      # The path inside the EXE is case-sensitive; use exact capitalisation.
-      if unzip -p "${_game_exe}" '.rsrc/ICON/1.ico' > "${_exe_ico_tmp}" 2>/dev/null \
-         && [[ -s "${_exe_ico_tmp}" ]]; then
-        ok_msg "Game icon extracted from EXE (.rsrc/ICON/1.ico)."
-        _exe_ico_ok="true"
-      else
-        rm -f "${_exe_ico_tmp}"
-        info_msg "Could not extract icon from EXE — falling back to Steam CDN ICO."
-      fi
-    elif [[ ! -f "${_game_exe}" ]]; then
-      info_msg "Game EXE not yet downloaded — will use Steam CDN ICO for now."
-    fi
-
-    # --- Step B: fall back to the Steam CDN community ICO -------------------
-    # The Steam community ICO is 32×32 (single frame). It is kept regardless
-    # because it is required for the shortcuts.vdf "icon" field in Steam.
+    # Download the Steam CDN ICO for shortcuts.vdf (not used as desktop icon).
     curl ${CURL_FLAGS}f -o "${STEAM_ICO_PATH}" "${STEAM_ICO_URL}" || true
 
-    # Choose which ICO to use as the desktop icon source.
-    local _src_ico="${STEAM_ICO_PATH}"
-    if [[ "${_exe_ico_ok}" == "true" ]]; then
-      _src_ico="${_exe_ico_tmp}"
-    fi
-
-    # --- Step C: convert the chosen ICO to PNG and install ------------------
-    local _ico_ok="false"
-    if [[ -f "${_src_ico}" ]]; then
-      python3 - "${_src_ico}" \
-               "${STEAM_GRID_PATH}" \
+    # Extract the icon group from the game EXE and install it as PNG.
+    local _game_exe="${GAME_DIR}/${GAME_EXE_REL}"
+    if [[ ! -f "${_game_exe}" ]]; then
+      warn_msg "Game EXE not found — desktop icon cannot be installed yet."
+      warn_msg "Re-run setup after downloading the game to install the icon."
+    else
+      python3 - "${_game_exe}" \
                "${_hicolor_32}/${_icon_name}.png" \
                "${_hicolor_256}/${_icon_name}.png" \
-               "${ICON_PATH}" << 'ICO2PNG_EOF' && _ico_ok="true" || true
-import sys, shutil, os
+               "${ICON_PATH}" << 'ICO2PNG_EOF'
+import struct, sys, shutil
+from PIL import Image
+import io
+
+def extract_pe_group_icon(exe_path, group_id=1):
+    """
+    Extract icon group group_id from a Windows PE executable.
+
+    Parses the PE .rsrc section directly using struct — no external tools
+    needed. Reads RT_GROUP_ICON (type 14) to get the frame manifest, then
+    reads each RT_ICON (type 3) frame and assembles a valid multi-frame ICO.
+    """
+    with open(exe_path, 'rb') as f:
+        data = f.read()
+    if data[:2] != b'MZ':
+        raise ValueError("Not a PE executable (missing MZ header)")
+    pe_off = struct.unpack_from('<I', data, 0x3C)[0]
+    if data[pe_off:pe_off+4] != b'PE\x00\x00':
+        raise ValueError("Invalid PE signature")
+    num_sects = struct.unpack_from('<H', data, pe_off + 6)[0]
+    opt_sz    = struct.unpack_from('<H', data, pe_off + 20)[0]
+    magic     = struct.unpack_from('<H', data, pe_off + 24)[0]
+    is64      = (magic == 0x20B)
+    # Data directory array: each entry is 8 bytes (RVA + size).
+    # Entry index 2 = resource directory.
+    dd_base  = pe_off + 24 + (112 if is64 else 96)
+    rsrc_rva = struct.unpack_from('<I', data, dd_base + 16)[0]
+
+    # Find the section that contains the resource directory.
+    rsrc_vaddr = rsrc_foff = 0
+    sect_base = pe_off + 24 + opt_sz
+    for i in range(num_sects):
+        s   = sect_base + i * 40
+        va  = struct.unpack_from('<I', data, s + 12)[0]
+        rsz = struct.unpack_from('<I', data, s + 16)[0]
+        rof = struct.unpack_from('<I', data, s + 20)[0]
+        if va <= rsrc_rva < va + rsz:
+            rsrc_vaddr, rsrc_foff = va, rof
+            break
+    if rsrc_foff == 0:
+        raise ValueError("No .rsrc section found in PE")
+
+    def rva2off(rva): return rsrc_foff + (rva - rsrc_vaddr)
+
+    def read_dir(off):
+        """Read an IMAGE_RESOURCE_DIRECTORY entry list."""
+        named = struct.unpack_from('<H', data, off + 12)[0]
+        ident = struct.unpack_from('<H', data, off + 14)[0]
+        out = []
+        for i in range(named + ident):
+            e   = off + 16 + i * 8
+            nid = struct.unpack_from('<I', data, e)[0]
+            ofs = struct.unpack_from('<I', data, e + 4)[0]
+            out.append((nid & 0x7FFFFFFF, ofs & 0x7FFFFFFF,
+                        bool(nid & 0x80000000), bool(ofs & 0x80000000)))
+        return out
+
+    def get_resource(type_id, res_id):
+        """Return raw bytes for resource (type_id, res_id), first language."""
+        # Level 1: type directory.
+        type_dir = None
+        for tid, toff, _, is_sub in read_dir(rsrc_foff):
+            if tid == type_id and is_sub:
+                type_dir = rsrc_foff + toff
+                break
+        if type_dir is None:
+            return None
+        # Level 2: ID directory.
+        id_dir = None
+        for rid, roff, _, is_sub in read_dir(type_dir):
+            if rid == res_id and is_sub:
+                id_dir = rsrc_foff + roff
+                break
+        if id_dir is None:
+            return None
+        # Level 3: language — take the first entry.
+        lang_entries = read_dir(id_dir)
+        if not lang_entries:
+            return None
+        _, data_off, _, is_sub = lang_entries[0]
+        if is_sub:
+            return None
+        entry_off = rsrc_foff + data_off
+        rva  = struct.unpack_from('<I', data, entry_off)[0]
+        size = struct.unpack_from('<I', data, entry_off + 4)[0]
+        return data[rva2off(rva):rva2off(rva) + size]
+
+    RT_ICON       = 3
+    RT_GROUP_ICON = 14
+
+    grp = get_resource(RT_GROUP_ICON, group_id)
+    if not grp:
+        raise ValueError(f"RT_GROUP_ICON id={group_id} not found in PE")
+
+    count = struct.unpack_from('<H', grp, 4)[0]
+    frames = []
+    for i in range(count):
+        e       = 6 + i * 14
+        w       = struct.unpack_from('<B', grp, e)[0]
+        h       = struct.unpack_from('<B', grp, e + 1)[0]
+        colors  = struct.unpack_from('<B', grp, e + 2)[0]
+        planes  = struct.unpack_from('<H', grp, e + 4)[0]
+        bpp     = struct.unpack_from('<H', grp, e + 6)[0]
+        icon_id = struct.unpack_from('<H', grp, e + 12)[0]
+        dib = get_resource(RT_ICON, icon_id)
+        if dib is None:
+            continue
+        frames.append((w, h, colors, planes, bpp, dib))
+
+    if not frames:
+        raise ValueError("No icon frames could be extracted from PE")
+
+    # Assemble a valid ICO file from the collected DIB frames.
+    n            = len(frames)
+    data_offset  = 6 + 16 * n
+    hdr  = struct.pack('<HHH', 0, 1, n)
+    dirs = b''
+    imgs = b''
+    for w, h, colors, planes, bpp, dib in frames:
+        dirs += struct.pack('<BBBBHHII', w, h, colors, 0,
+                            planes, bpp, len(dib), data_offset + len(imgs))
+        imgs += dib
+    return hdr + dirs + imgs
+
 try:
-    from PIL import Image
+    exe_path = sys.argv[1]
+    out_32   = sys.argv[2]
+    out_256  = sys.argv[3]
+    out_flat = sys.argv[4]
 
-    ico_path    = sys.argv[1]
-    poster_path = sys.argv[2]
-    out_32      = sys.argv[3]
-    out_256     = sys.argv[4]
-    out_flat    = sys.argv[5]
+    ico_bytes = extract_pe_group_icon(exe_path, group_id=1)
+    img = Image.open(io.BytesIO(ico_bytes))
 
-    ico_img = Image.open(ico_path)
-
-    # Extract every available frame size from the ICO.
-    if hasattr(ico_img, 'ico') and ico_img.ico.sizes():
-        sizes = sorted(ico_img.ico.sizes(), key=lambda s: s[0] * s[1], reverse=True)
+    # Collect all available frame sizes from the ICO.
+    if hasattr(img, 'ico') and img.ico.sizes():
+        sizes = sorted(img.ico.sizes(), key=lambda s: s[0] * s[1], reverse=True)
     else:
-        sizes = [ico_img.size]
+        sizes = [img.size]
 
-    # --- 32x32 slot: use the smallest frame >= 32x32, or scale down the largest.
-    # Prefer an exact 32x32 frame; otherwise use the largest frame and resize.
-    best_32 = None
-    for sz in reversed(sizes):  # smallest-first for closest match >= 32
-        if sz[0] >= 32:
-            best_32 = sz
-    if best_32 is None:
-        best_32 = sizes[0]  # largest available
+    # 32x32 slot: prefer the native 32x32 frame; resize if unavailable.
+    best_32 = next((s for s in reversed(sizes) if s[0] >= 32), sizes[0])
+    f32 = img.ico.getimage(best_32).convert("RGBA") if hasattr(img, 'ico') else img.convert("RGBA")
+    if f32.size != (32, 32):
+        f32 = f32.resize((32, 32), Image.LANCZOS)
+    f32.save(out_32, "PNG")
 
-    if hasattr(ico_img, 'ico'):
-        frame_32 = ico_img.ico.getimage(best_32).convert("RGBA")
-    else:
-        frame_32 = ico_img.convert("RGBA")
-    if frame_32.size != (32, 32):
-        frame_32 = frame_32.resize((32, 32), Image.LANCZOS)
-    frame_32.save(out_32, "PNG")
-
-    # --- 256x256 slot: use the largest ICO frame if it is >= 128x128;
-    # otherwise fall back to the portrait poster for a crisp result.
+    # 256x256 slot: use the largest available frame, resize to exactly 256x256.
     largest = sizes[0]
-    if hasattr(ico_img, 'ico'):
-        frame_large = ico_img.ico.getimage(largest).convert("RGBA")
-    else:
-        frame_large = ico_img.convert("RGBA")
+    fl = img.ico.getimage(largest).convert("RGBA") if hasattr(img, 'ico') else img.convert("RGBA")
+    fl.resize((256, 256), Image.LANCZOS).save(out_256, "PNG")
+    shutil.copy2(out_256, out_flat)
 
-    if largest[0] >= 128:
-        # The ICO has a large enough frame — resize to exactly 256x256.
-        frame_256 = frame_large.resize((256, 256), Image.LANCZOS)
-        frame_256.save(out_256, "PNG")
-        shutil.copy2(out_256, out_flat)
-        print(f"[icon] {largest[0]}x{largest[1]} ICO frame → 32x32 + 256x256 hicolor + flat fallback.")
-    elif os.path.isfile(poster_path):
-        # ICO frames are too small (e.g. 32x32 only) — use the portrait poster
-        # (600x900 JPG) centre-cropped to a square for the 256x256 slot.
-        poster = Image.open(poster_path).convert("RGBA")
-        w, h   = poster.size
-        side   = min(w, h)
-        left   = (w - side) // 2
-        top    = (h - side) // 2
-        poster = poster.crop((left, top, left + side, top + side))
-        poster.resize((256, 256), Image.LANCZOS).save(out_256, "PNG")
-        shutil.copy2(out_256, out_flat)
-        print(f"[icon] ICO {largest[0]}x{largest[1]} (small) → 32x32 from ICO, 256x256 from poster.")
-    else:
-        # No poster yet — upscale the largest ICO frame (blurry but functional).
-        frame_large.resize((256, 256), Image.LANCZOS).save(out_256, "PNG")
-        shutil.copy2(out_32, out_flat)
-        print(f"[icon] ICO only — 32x32 native, 256x256 upscaled (poster unavailable).")
-except ImportError:
-    print("[icon] Pillow not available — trying ImageMagick fallback.", file=sys.stderr)
-    sys.exit(1)
+    print(f"[icon] Installed from game EXE: {largest[0]}x{largest[1]} largest frame "
+          f"→ hicolor 32x32, 256x256, flat fallback.")
+    sys.exit(0)
 except Exception as e:
-    print(f"[icon] ICO->PNG conversion failed: {e}", file=sys.stderr)
+    print(f"[icon] Failed to extract icon from game EXE: {e}", file=sys.stderr)
     sys.exit(1)
 ICO2PNG_EOF
-
-      # ImageMagick fallback: used when Pillow is not installed.
-      if [[ "${_ico_ok}" == "false" ]] && command_exists convert; then
-        # Extract and resize to 32x32.
-        convert "${_src_ico}[0]" -resize 32x32 \
-          "${_hicolor_32}/${_icon_name}.png" 2>/dev/null || true
-        # For 256x256: use portrait poster if available, else upscale ICO.
-        if [[ -f "${STEAM_GRID_PATH}" ]]; then
-          convert "${STEAM_GRID_PATH}" \
-            -gravity Center \
-            -extent "$(convert "${STEAM_GRID_PATH}" \
-              -format "%[fx:min(w,h)]x%[fx:min(w,h)]" info: \
-              2>/dev/null || echo '600x600')+0+0" \
-            -resize 256x256 \
-            "${_hicolor_256}/${_icon_name}.png" 2>/dev/null || true
-        else
-          convert "${_src_ico}[0]" -resize 256x256 \
-            "${_hicolor_256}/${_icon_name}.png" 2>/dev/null || true
-        fi
-        if [[ -f "${_hicolor_256}/${_icon_name}.png" ]]; then
-          cp "${_hicolor_256}/${_icon_name}.png" "${ICON_PATH}"
-          _ico_ok="true"
-          ok_msg "Game icon installed via ImageMagick."
-        elif [[ -f "${_hicolor_32}/${_icon_name}.png" ]]; then
-          cp "${_hicolor_32}/${_icon_name}.png" "${ICON_PATH}"
-          _ico_ok="true"
-          ok_msg "Game icon (32x32 only) installed via ImageMagick."
-        fi
+      if [[ $? -ne 0 ]]; then
+        warn_msg "Could not extract icon from game EXE — desktop icon will be missing."
+        warn_msg "Ensure python3 and Pillow (pip install pillow) are available."
       fi
     fi
-
-    # --- Step D: last resort — use the portrait poster ----------------------
-    if [[ "${_ico_ok}" == "false" ]] && [[ -f "${STEAM_GRID_PATH}" ]]; then
-      cp "${STEAM_GRID_PATH}" "${ICON_PATH}"
-      warn_msg "Using portrait poster as desktop icon (no ICO source or converter available)."
-    fi
-
-    # Clean up the temporary EXE-extracted ICO (the CDN copy at STEAM_ICO_PATH
-    # is kept because it is needed for the Steam shortcuts.vdf icon field).
-    rm -f "${_exe_ico_tmp}"
 
     # Copy the portrait poster to ICON_POSTER_PATH for Steam grid artwork only.
     if [[ -f "${STEAM_GRID_PATH}" ]]; then
@@ -4401,8 +4426,12 @@ _cleanup() {
   # and winedevice.exe that survived the session kill above.
   # winedevice.exe is scoped to our WINEPREFIX path so other Wine games running
   # concurrently are not affected.
-  pkill -KILL -x "gamescope-wl"    2>/dev/null || true
-  pkill -KILL -x "gamescopereaper" 2>/dev/null || true
+  # gamescope-wl (12 chars) fits in the 15-char Linux comm field — use -x.
+  # gamescopereaper (16 chars) exceeds it — the kernel truncates comm to 15
+  # chars ("gamescopereappe"), so pkill -x never matches. Use -f instead,
+  # which matches against the full command line in /proc/PID/cmdline.
+  pkill -KILL -x "gamescope-wl"       2>/dev/null || true
+  pkill -KILL -f "gamescopereaper"    2>/dev/null || true
   pkill -KILL -f "winedevice.exe.*${WINEPREFIX}" 2>/dev/null || true
 
   # Shut down the wineserver for our prefix only. This flushes pending
