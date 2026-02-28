@@ -5,22 +5,13 @@
 #  Installs Wine, Windows libraries, and the game. Handles authentication
 #  directly via the Project Crown gateway API (the server that manages your
 #  account and game content — no Windows launcher needed).
-#  Optionally configures Steam integration and Gamescope.
+#  Optionally configures Steam integration.
 #
 #  USAGE
 #    chmod +x cluckers-setup.sh          # make executable (first time only)
 #    ./cluckers-setup.sh                 # interactive install (keyboard/mouse)
 #    ./cluckers-setup.sh --auto          # skip all prompts, use defaults
 #    ./cluckers-setup.sh --verbose       # show full Wine debug output
-#    ./cluckers-setup.sh --gamescope              # opt-in: enable Gamescope compositor (-g)
-#                                                 # Gamescope is a specialized window manager
-#                                                 # that provides better performance and
-#                                                 # features like upscaling and HDR.
-#    ./cluckers-setup.sh --gamescope-with-controller  # opt-in: Gamescope + controller support (-gc)
-#                                                 # Combines --gamescope and --controller in one
-#                                                 # flag. Ideal for couch/TV setups where you
-#                                                 # want the Gamescope compositor AND a gamepad.
-#                                                 # Also triggered when both -g and -c are passed.
 #    ./cluckers-setup.sh --steam-deck             # opt-in: apply game patches (Deck)    (-d)
 #    ./cluckers-setup.sh --controller             # opt-in: enable controller support   (-c)
 #    ./cluckers-setup.sh --update                 # check for game update       (-u)
@@ -28,9 +19,7 @@
 #    ./cluckers-setup.sh --help                   # show this help message      (-h)
 #
 #  SHORT FLAGS
-#    -a  auto    -v  verbose    -g  gamescope    -gc  gamescope-with-controller
-#    -d  steam-deck    -c  controller    -u  update    -h  help
-#    Passing both -g and -c together is the same as -gc (auto-detected).
+#    -a  auto    -v  verbose    -d  steam-deck    -c  controller    -u  update    -h  help
 #    --uninstall  (full word only, no short alias — removes everything)
 #
 #  UPDATE  (--update / -u)
@@ -70,13 +59,6 @@
 #      • controller_neptune_config.vdf — deploys the custom Steam Deck button
 #        layout to your Steam controller config directory (preserves any
 #        existing one). VDF is Valve's text-based configuration format.
-#      • Gamescope is not used (SteamOS manages its own compositor)
-#
-#    The --gamescope-with-controller / -gc flag is for desktop Linux users who
-#    want BOTH the Gamescope compositor AND controller input support. It is
-#    equivalent to passing --gamescope --controller (or -g -c) together and
-#    bakes both modes into the generated launcher script. Ideal for couch/TV
-#    setups on desktop Linux. Steam Deck users should use --steam-deck instead.
 #
 #  PIN A SPECIFIC GAME VERSION
 #    GAME_VERSION=0.36.9999.0 ./cluckers-setup.sh
@@ -137,7 +119,7 @@ GAME_VERSION="${GAME_VERSION:-auto}"
 #   --hdr-enabled            — enable HDR passthrough (requires HDR display)
 #
 # Steam Deck users: these args are NOT used when --steam-deck / -d is passed
-# because SteamOS runs its own Gamescope session automatically.
+# because SteamOS manages its own Gamescope session automatically.
 # --force-grab-cursor is included because it fixes the mouse bugging out
 # (stuck in a corner or invisible) on many Desktop Environments and Distros.
 # These args are also used when --gamescope-with-controller / -G is passed,
@@ -166,15 +148,20 @@ readonly WINEPREFIX="${CLUCKERS_ROOT}/pfx"
 readonly CLUCKERS_PYLIBS="${CLUCKERS_ROOT}/pylibs"
 export PYTHONPATH="${CLUCKERS_PYLIBS}:${PYTHONPATH:-}"
 
+# XDG Base Directory Specification fallbacks.
+# Source: https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
+_DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
+_BIN_HOME="${HOME}/.local/bin"
+
 # The launcher script written to ~/.local/bin/ during setup. This is the small
 # shell script that sets up Wine and starts the game. You can run it directly
 # from a terminal or via the .desktop shortcut in your application menu.
-readonly LAUNCHER_SCRIPT="${HOME}/.local/bin/cluckers-central.sh"
+readonly LAUNCHER_SCRIPT="${_BIN_HOME}/cluckers-central.sh"
 
 # The .desktop file makes the game appear as an icon in your application menu
 # (GNOME, KDE, etc.) so you can launch it just like a native Linux app.
-readonly DESKTOP_FILE="${HOME}/.local/share/applications/cluckers-central.desktop"
-readonly ICON_DIR="${HOME}/.local/share/icons"
+readonly DESKTOP_FILE="${_DATA_HOME}/applications/cluckers-central.desktop"
+readonly ICON_DIR="${_DATA_HOME}/icons"
 # Desktop icon: PNG converted from the ICO embedded in the game EXE.
 # The ICO is extracted via unzip and its largest frame converted to PNG
 # using Pillow. PNG is used because most Linux DEs do not render ICO
@@ -191,14 +178,14 @@ readonly APP_NAME="Cluckers Central"
 readonly UPDATER_URL="https://updater.realmhub.io/builds/version.json"
 
 # Directory where game files are downloaded and extracted.
-readonly GAME_DIR="${CLUCKERS_ROOT}/game"
+GAME_DIR="${CLUCKERS_ROOT}/game"
 
 # Path to the game executable, relative to GAME_DIR.
 # "ShippingPC-RealmGameNoEditor.exe" is the standard name for a shipped (retail)
 # Unreal Engine 3 game binary. "NoEditor" simply means the UE3 level-editor
 # tools are stripped out — this is normal for all shipped UE3 titles.
 # Source: https://github.com/0xc0re/cluckers/blob/master/internal/launch/deckconfig.go
-readonly GAME_EXE_REL="Realm-Royale/Binaries/Win64/ShippingPC-RealmGameNoEditor.exe"
+GAME_EXE_REL="Realm-Royale/Binaries/Win64/ShippingPC-RealmGameNoEditor.exe"
 
 # Official Steam store AppID for Realm Royale Reforged. Used when creating and
 # removing Steam non-Steam-game shortcuts so the correct shortcut is found.
@@ -570,6 +557,14 @@ install_sys_deps() {
     fi
   fi
 
+  # Ensure python3-pillow is installed for icon extraction.
+  local pillow_pkg="python3-pillow"
+  [[ "${pkg_mgr}" == "pacman" ]] && pillow_pkg="python-pillow"
+  [[ "${pkg_mgr}" == "zypper" ]] && pillow_pkg="python3-Pillow"
+  if ! is_pkg_installed "${pkg_mgr}" "${pillow_pkg}"; then
+    to_install+=("${pillow_pkg}")
+  fi
+
   # Some distros provide wine/winetricks commands via package names that differ
   # from binary names. Ensure apt users still receive the full runtime stack.
   if [[ "${pkg_mgr}" == "apt" ]]; then
@@ -592,50 +587,105 @@ install_sys_deps() {
   fi
 
   if [[ ${#to_install[@]} -eq 0 ]]; then
+    # Even if system packages are present, we should still ensure pip modules.
+    # We call ensure_python_deps below to handle this.
     ok_msg "All required system tools are already installed."
+  else
+    info_msg "Missing tools: ${to_install[*]}. Installing..."
+    
+    # Simple progress bar for the installation process.
+    local i
+    local total=${#to_install[@]}
+    printf "  %b[PROG]%b  Installing system dependencies: [" "${BLUE}" "${NC}"
+    for ((i=0; i<40; i++)); do printf "-"; done
+    printf "] 0%%\r"
+
+    case "${pkg_mgr}" in
+      apt)
+        sudo dpkg --add-architecture i386
+        # Only update if the cache is older than 1 hour (3600 seconds) to save time.
+        local last_update
+        last_update=$(stat -c %Y /var/cache/apt/pkgcache.bin 2>/dev/null || echo 0)
+        local now
+        now=$(date +%s)
+        if (( now - last_update > 3600 )); then
+          sudo apt-get update -qq
+        fi
+        # Use fancy progress bar if supported.
+        sudo apt-get install -y -qq -o Dpkg::Progress-Fancy="1" "${to_install[@]}" >/dev/null 2>&1
+        ;;
+      pacman)
+        sudo pacman -Sy --noconfirm -q "${to_install[@]}" >/dev/null 2>&1
+        ;;
+      dnf)
+        sudo dnf install -y -q "${to_install[@]}" >/dev/null 2>&1
+        ;;
+      zypper)
+        sudo zypper install -y "${to_install[@]}" >/dev/null 2>&1
+        ;;
+    esac
+
+    # Complete the progress bar.
+    printf "  %b[ OK ]%b  Installing system dependencies: [" "${GREEN}" "${NC}"
+    for ((i=0; i<40; i++)); do printf "#"; done
+    printf "] 100%%\n"
+    ok_msg "All system tools installed."
+  fi
+
+  # Step 1c — Ensure Python modules (Pillow, blake3, vdf).
+  ensure_python_deps
+}
+
+# Ensures essential Python modules are installed via pip if missing.
+# Some distributions do not package these or have very old versions.
+# We use 'python3 -m pip install' to ensure they are available to our script.
+ensure_python_deps() {
+  step_msg "Step 1c — Ensuring Python dependencies (Pillow, blake3, vdf)..."
+  
+  local pip_cmd="python3 -m pip"
+  if ! command_exists python3; then
+    warn_msg "python3 not found — skipping Python dependency check."
     return 0
   fi
 
-  info_msg "Missing tools: ${to_install[*]}. Installing..."
-  
-  # Simple progress bar for the installation process.
-  local i
-  local total=${#to_install[@]}
-  printf "  %b[PROG]%b  Installing system dependencies: [" "${BLUE}" "${NC}"
-  for ((i=0; i<40; i++)); do printf "-"; done
-  printf "] 0%%\r"
+  # Check if pip is available.
+  if ! "${pip_cmd}" --version >/dev/null 2>&1; then
+    warn_msg "pip not found — Python modules might be missing."
+    return 0
+  fi
 
-  case "${pkg_mgr}" in
-    apt)
-      sudo dpkg --add-architecture i386
-      # Only update if the cache is older than 1 hour (3600 seconds) to save time.
-      local last_update
-      last_update=$(stat -c %Y /var/cache/apt/pkgcache.bin 2>/dev/null || echo 0)
-      local now
-      now=$(date +%s)
-      if (( now - last_update > 3600 )); then
-        sudo apt-get update -qq
-      fi
-      # Use fancy progress bar if supported.
-      sudo apt-get install -y -qq -o Dpkg::Progress-Fancy="1" "${to_install[@]}" >/dev/null 2>&1
-      ;;
-    pacman)
-      sudo pacman -Sy --noconfirm -q "${to_install[@]}" >/dev/null 2>&1
-      ;;
-    dnf)
-      sudo dnf install -y -q "${to_install[@]}" >/dev/null 2>&1
-      ;;
-    zypper)
-      sudo zypper install -y "${to_install[@]}" >/dev/null 2>&1
-      ;;
-  esac
+  local -a py_deps=(Pillow blake3 vdf)
+  local missing_deps=()
 
-  # Complete the progress bar.
-  printf "  %b[ OK ]%b  Installing system dependencies: [" "${GREEN}" "${NC}"
-  for ((i=0; i<40; i++)); do printf "#"; done
-  printf "] 100%%\n"
-  ok_msg "All system tools installed."
+  for dep in "${py_deps[@]}"; do
+    if ! python3 -c "import ${dep}" >/dev/null 2>&1; then
+      missing_deps+=("${dep}")
+    fi
+  done
+
+  if [[ ${#missing_deps[@]} -eq 0 ]]; then
+    ok_msg "All required Python modules are already present."
+    return 0
+  fi
+
+  info_msg "Installing missing Python modules: ${missing_deps[*]}..."
+  # We use --user to avoid needing sudo for pip installs, which is recommended.
+  # If we are in a PEP 668 'externally-managed' environment, --user might fail
+  # unless we use --break-system-packages (not ideal) or a venv.
+  # For simplicity and given this is a game setup script, we try --user first.
+  if ! "${pip_cmd}" install --user "${missing_deps[@]}" >/dev/null 2>&1; then
+    # If it fails, it might be due to PEP 668. Try with --break-system-packages
+    # only if the user is ok or we are in auto mode.
+    info_msg "Standard pip install failed. Attempting with --break-system-packages (legacy)..."
+    "${pip_cmd}" install --user --break-system-packages "${missing_deps[@]}" >/dev/null 2>&1 || \
+      warn_msg "Failed to install Python modules via pip. Icon extraction or update verification may fail."
+  fi
+
+  if [[ $? -eq 0 ]]; then
+    ok_msg "Python modules installed successfully."
+  fi
 }
+
 
 # Ensures winetricks is recent enough to install the packages the game needs.
 #
@@ -2502,6 +2552,16 @@ main() {
   local do_update="false"
   local WINETRICKS_BIN="winetricks"
 
+  # Detect if the game EXE is in the current directory.
+  # If found, we use the current directory as GAME_DIR and set relative path
+  # to the EXE. This allows running the script from a manual game install.
+  if [[ -f "ShippingPC-RealmGameNoEditor.exe" ]]; then
+    GAME_DIR="$(pwd)"
+    GAME_EXE_REL="ShippingPC-RealmGameNoEditor.exe"
+    ok_msg "Found game EXE in current directory: ${GAME_EXE_REL}"
+    ok_msg "Using current directory as GAME_DIR: ${GAME_DIR}"
+  fi
+
   # Load saved preferences.
   local controller_pref_file="${GAME_DIR}/.controller_enabled"
   if [[ -f "${controller_pref_file}" ]]; then
@@ -2575,6 +2635,8 @@ main() {
     mkdir -p "${GAME_DIR}"
     touch "${controller_pref_file}"
   fi
+
+
 
   # Show the banner immediately so the user knows the script has started.
   # This must come before find_wine (which probes Wine binaries and can take
@@ -4001,9 +4063,14 @@ export WINEDEBUG="-all"
 # d3d10core=n,b: use DXVK's d3d10 implementation alongside d3d11 (they share the same
 #               DXVK library; both must be set native or neither will work).
 # xinput1_3=n:  use our custom xinput remapper installed in Step 6.
+# winex11.drv=: disables the X11 driver in Wine. This is a fix for the "cursor 
+#               spinning" problem when running in fullscreen (-f) on some 
+#               Wayland-based systems. NOTE: This may break the game on 
+#               traditional X11 environments; if the game fails to open a 
+#               window, remove this override.
 # Source: https://github.com/0xc0re/cluckers/blob/master/internal/launch/process.go
 $(if [[ "${controller_mode}" == "true" || "${steam_deck}" == "true" ]]; then
-  printf 'export WINEDLLOVERRIDES="dxgi=n,b;d3d11=n,b;d3d10core=n,b;xinput1_3=n"\n'
+  printf 'export WINEDLLOVERRIDES="dxgi=n,b;d3d11=n,b;d3d10core=n,b;xinput1_3=n;winex11.drv="\n'
   # SDL_HINT_JOYSTICK_HIDAPI — when set to "0" disables SDL's HIDAPI driver for
   # all joysticks. Without this, Wine's winebus.sys and SDL's HIDAPI layer both
   # enumerate the same physical device, causing duplicate axis events and phantom
@@ -4044,7 +4111,7 @@ done
 [[ -n "${_sdl_db}" ]] && export SDL_GAMECONTROLLERCONFIG_FILE="${_sdl_db}"
 SDLEOF
 else
-  printf 'export WINEDLLOVERRIDES="dxgi=n,b;d3d11=n,b;d3d10core=n,b"\n'
+  printf 'export WINEDLLOVERRIDES="dxgi=n,b;d3d11=n,b;d3d10core=n,b;winex11.drv="\n'
 fi)
 
 # Wine binary and optional Proton script resolved by find_wine() at setup time.
@@ -4300,11 +4367,11 @@ fi
 # Cleanup: kill all processes we spawned whenever the launcher exits — whether
 # the game closed normally, was interrupted (Ctrl+C), or received SIGTERM.
 # When the game exits, shm_launcher.exe returns and wait completes, but Wine
-# background processes (winedevice.exe) and gamescope (+ its reaper) stay alive
-# until explicitly killed. We always clean them up here.
+# background processes (winedevice.exe) stay alive until explicitly killed. 
+# We always clean them up here.
 #
-# Both gamescope and wine are launched via setsid, making them session leaders.
-# Their SID == their PID, so we kill by session: pkill -s PID sends the signal
+# Wine is launched via setsid, making it a session leader.
+# Its SID == its PID, so we kill by session: pkill -s PID sends the signal
 # to every process in that session regardless of how many process groups Wine
 # has spawned internally (winedevice.exe, services.exe, etc.).
 _kill_session() {
@@ -4316,8 +4383,7 @@ _kill_session() {
   # leader (PGID == PID), so kill -- -PID reaches all processes in the group.
   kill -TERM -- "-${pid}" 2>/dev/null || true
 
-  # Also kill by session ID — catches processes that called setsid themselves
-  # (gamescope-wl and gamescopereaper do this internally).
+  # Also kill by session ID — catches processes that called setsid themselves.
   pkill -TERM -s "${pid}" 2>/dev/null || true
 
   # Kill by parent PID as an additional sweep for any orphaned children.
@@ -4355,18 +4421,15 @@ _cleanup() {
   _kill_session "${_WINE_PID:-}"
 
   # Step 3: Graceful wineserver shutdown — terminates winedevice.exe,
-  # services.exe, plugplay.exe and all Wine helpers for our prefix.
+  # services.exe, plugplay.exe and all Wine helpers for our specific prefix.
+  # This is the standard, safe way to shut down Wine without side effects.
   WINEPREFIX="${WINEPREFIX}" "${WINESERVER}" -k 2>/dev/null || true
   sleep 0.5
 
-  # Step 4: Force-kill any Wine helpers that survived the graceful shutdown.
-  # We scope the kill to our session (_GS_PID / _WINE_PID) to avoid killing
-  # Wine processes from other prefixes or games running concurrently.
-  # wineserver -k (above) handles winedevice.exe/services.exe scoped to our
-  # WINEPREFIX — broad pkill by name would affect all Wine instances.
+  # Step 4: Final sweep for any orphans specifically in our session.
   _kill_session "${_WINE_PID:-}"
 
-  # Remove temp files created during this launcher session.
+  # Step 5: Remove temp files created during this launcher session.
   [[ -n "${_bootstrap_tmp:-}" ]] && rm -f "${_bootstrap_tmp}"
   [[ -n "${_oidc_tmp:-}" ]] && rm -f "${_oidc_tmp}"
 }
@@ -4378,9 +4441,9 @@ trap _cleanup EXIT INT TERM HUP
 # Prepare final command.
 # Always launch the game using the Wine binary directly — never via 'proton run'.
 # The 'proton run' path invokes the Steam Linux Runtime (pressure-vessel) container
-# which requires Steam to be running. This caused gamescope to open but the game
-# never started. We replicate what pressure-vessel provides by setting LD_LIBRARY_PATH
-# to the Proton build's own lib directories, exactly as we do for maintenance tasks.
+# which requires Steam to be running. We replicate what pressure-vessel provides 
+# by setting LD_LIBRARY_PATH to the Proton build's own lib directories, exactly 
+# as we do for maintenance tasks.
 _launch_cmd=("${WINE}")
 
 _launch_gamescope() {
@@ -4439,6 +4502,7 @@ else
     wait "${_WINE_PID}" || true
   fi
 fi
+
 
 # The EXIT trap (_cleanup) fires here automatically when this script exits,
 # killing any remaining gamescope/Wine processes and removing temp files.
@@ -4677,10 +4741,8 @@ try:
     # The desktop .desktop file uses Icon=cluckers-central (theme name lookup),
     # not an absolute path, so ICON_PATH is only used here as a fallback.
     icon_path = STEAM_ICO if STEAM_ICO and os.path.exists(STEAM_ICO) else ICON_PATH
-    # LaunchOptions: leave empty — the launcher script handles gamescope
-    # and all launch arguments internally. Putting gamescope here would cause
-    # it to run twice when launched from Steam (once from Steam's LaunchOptions
-    # and once from the launcher script itself).
+    # LaunchOptions: leave empty — the launcher script handles
+    # all launch arguments internally.
     launch_opts = ""
 
     next_key = str(len(sc))
