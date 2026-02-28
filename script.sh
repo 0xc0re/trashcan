@@ -4312,11 +4312,13 @@ _launch_cmd=("${WINE}")
 
 _launch_gamescope() {
   # Launch gamescope wrapping the game. gamescope does not always exit when
-  # the game exits — it may linger as a Wayland compositor. We therefore:
-  #   1. Start gamescope (and game) in the background, recording its PID.
-  #   2. Poll in a background subshell for shm_launcher / wine to exit.
-  #   3. When the game process is gone, kill the gamescope session.
-  #   4. wait on gamescope so the EXIT trap (_cleanup) fires cleanly.
+  # the game exits. We wait on the Wine/shm_launcher child process directly
+  # rather than on gamescope, then kill gamescope explicitly when done.
+  #
+  # gamescope runs the launch command as: gamescope -- wine shm_launcher.exe
+  # gamescopereaper forks wine as its direct child. We find wine's PID by
+  # waiting briefly for it to appear as a descendant of gamescope, then
+  # wait on that PID. When wine exits, we kill the gamescope session.
   local _gs_cmd=("$@")
   # shellcheck disable=SC2086
   setsid env DBUS_SESSION_BUS_ADDRESS=/dev/null ${GS_ARGS} -- \
@@ -4324,20 +4326,31 @@ _launch_gamescope() {
   _GS_PID=$!
   _WINE_PID=${_GS_PID}
 
-  # Background watcher: once shm_launcher.exe / wine is no longer a
-  # descendant of gamescope, kill the entire gamescope session.
-  ( while kill -0 "${_GS_PID}" 2>/dev/null; do
-      # Check if any wine/shm_launcher child still exists under gamescope.
-      if ! pgrep -P "${_GS_PID}" > /dev/null 2>&1 \
-         && ! pgrep -s "${_GS_PID}" > /dev/null 2>&1; then
-        kill -TERM -- "-${_GS_PID}" 2>/dev/null || true
-        break
-      fi
+  # Give gamescope and gamescopereaper a moment to fork wine.
+  sleep 2
+
+  # Find the wine child process under gamescope's session.
+  # pgrep -s searches by session ID (SID == _GS_PID since we used setsid).
+  # We look for wine or shm_launcher in the session.
+  local _wine_child
+  _wine_child=$(pgrep -s "${_GS_PID}" -f "wine\|shm_launcher" 2>/dev/null | head -1)
+
+  if [[ -n "${_wine_child}" ]]; then
+    # Poll until the wine/shm_launcher process exits. We cannot use bash's
+    # wait built-in on a grandchild process (only direct children of the
+    # shell can be waited on). kill -0 checks if the process still exists
+    # without sending a signal — it returns non-zero when the PID is gone.
+    _WINE_PID="${_wine_child}"
+    while kill -0 "${_WINE_PID}" 2>/dev/null; do
       sleep 0.5
     done
-  ) &
+  else
+    # Could not find wine child — wait on gamescope directly.
+    wait "${_GS_PID}" || true
+  fi
 
-  wait "${_GS_PID}" || true
+  # Game has exited — kill gamescope and all its children.
+  _kill_session "${_GS_PID}"
 }
 
 if [[ -s "${_bootstrap_tmp}" ]]; then
