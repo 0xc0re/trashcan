@@ -2603,6 +2603,8 @@ main() {
   local VERSION_INFO_JSON=""
   local do_update="false"
   local WINETRICKS_BIN="winetricks"
+  local GATEWAY_URL="${GATEWAY_URL:-https://gateway-dev.project-crown.com}"
+  local CREDS_FILE="${CLUCKERS_ROOT}/credentials.enc"
 
   # Detect if the game EXE is in the current directory.
   # If found, we use the current directory as GAME_DIR and set relative path
@@ -4918,6 +4920,119 @@ fi
   fi
 
   apply_game_patches "${GAME_DIR}" "${steam_deck}" "${controller_mode}"
+
+  # --------------------------------------------------------------------------
+  # Step 12 — Verifying account
+  #
+  # Ensures the user can log in before finishing. This step is skipped in
+  # auto mode if credentials already exist.
+  # --------------------------------------------------------------------------
+  if [[ "${auto_mode}" == "false" ]] || [[ ! -f "${CREDS_FILE}" ]]; then
+    step_msg "Step 12 — Verifying account..."
+    
+    while true; do
+      if [[ -f "${CREDS_FILE}" ]]; then
+        info_msg "Credentials found. Verifying existing account..."
+      else
+        info_msg "No credentials found. Please log in."
+      fi
+
+      # Run verification via Python (same logic as launcher).
+      _auth_status=$(PYTHONPATH="${CLUCKERS_PYLIBS}${PYTHONPATH:+:${PYTHONPATH}}" \
+      python3 - "${CREDS_FILE}" "${GATEWAY_URL}" << 'AUTHEOF'
+import base64, json, os, sys, urllib.request, urllib.error, termios, tty as ttymod
+
+creds_file = sys.argv[1]
+gateway    = sys.argv[2].rstrip("/")
+
+def _post(endpoint, payload):
+    url  = f"{gateway}/json/{endpoint}"
+    data = json.dumps(payload).encode()
+    req  = urllib.request.Request(
+        url, data=data,
+        headers={"Content-Type": "application/json", "User-Agent": "CluckersCentral/1.1.68", "Accept": "*/*"},
+        method="POST"
+    )
+    with urllib.request.urlopen(req) as resp:
+        return json.loads(resp.read())
+
+def _flex_bool(val):
+    if isinstance(val, bool): return val
+    if isinstance(val, (int, float)): return val != 0
+    if isinstance(val, str): return val.lower() in ("true", "1", "yes")
+    return False
+
+username = password = ""
+if os.path.exists(creds_file):
+    try:
+        with open(creds_file) as f:
+            line = f.read().strip()
+        username, password = line.split(":", 1)
+    except Exception: pass
+
+if not username or not password:
+    try:
+        tty_fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+        tty_r = os.fdopen(os.dup(tty_fd), "r", buffering=1, closefd=True)
+        tty_w = os.fdopen(tty_fd,          "w", buffering=1, closefd=True)
+    except OSError:
+        print("FAIL:Cannot open /dev/tty for input")
+        sys.exit(1)
+    try:
+        tty_w.write("\nEnter your Project Crown credentials.\nUsername: ")
+        tty_w.flush()
+        username = tty_r.readline().rstrip("\n")
+        tty_w.write("Password: ")
+        tty_w.flush()
+        old = termios.tcgetattr(tty_r)
+        try:
+            ttymod.setraw(tty_r)
+            password = ""
+            while True:
+                ch = tty_r.read(1)
+                if ch in ("\n", "\r"): break
+                if ch == "\x7f": password = password[:-1]
+                else: password += ch
+        finally:
+            termios.tcsetattr(tty_r, termios.TCSADRAIN, old)
+            tty_w.write("\n")
+            tty_w.flush()
+    finally:
+        tty_r.close()
+        tty_w.close()
+
+try:
+    login = _post("LAUNCHER_LOGIN_OR_LINK", {"user_name": username, "password": password})
+    if _flex_bool(login.get("SUCCESS")):
+        os.makedirs(os.path.dirname(creds_file), exist_ok=True)
+        def secure_opener(path, flags): return os.open(path, flags, 0o600)
+        with open(creds_file, "w", opener=secure_opener) as f:
+            f.write(f"{username}:{password}")
+        print(f"OK:{username}")
+    else:
+        msg = login.get("TEXT_VALUE") or "invalid credentials"
+        print(f"FAIL:{msg}")
+        if os.path.exists(creds_file): os.remove(creds_file)
+except Exception as e:
+    print(f"FAIL:Connection error ({e})")
+AUTHEOF
+)
+      if [[ "${_auth_status}" == OK:* ]]; then
+        ok_msg "Account verified: ${_auth_status#OK:}"
+        break
+      else
+        error_msg="${_auth_status#FAIL:}"
+        warn_msg "Verification failed: ${error_msg:-unknown error}"
+        if [[ "${auto_mode}" == "true" ]]; then
+          warn_msg "Skipping account verification in auto mode."
+          break
+        fi
+        printf "  Try again? (Y/n): "
+        read -r _retry
+        if [[ "${_retry}" =~ ^[Nn] ]]; then break; fi
+      fi
+    done
+  fi
 
   fi # end skip_heavy_steps
 
