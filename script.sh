@@ -4285,12 +4285,21 @@ _cleanup() {
   pkill -KILL -x "gamescope-wl"    2>/dev/null || true
   pkill -KILL -f "gamescopereaper" 2>/dev/null || true
 
-  # Shut down the wineserver for our prefix. This sends a graceful shutdown
-  # to wineserver, which then terminates winedevice.exe, services.exe, and
-  # all other Wine helper processes associated with this prefix.
-  # Scoped by WINEPREFIX so other Wine prefixes are not affected.
+  # Ask wineserver to shut down gracefully. This causes wineserver to send
+  # SIGTERM to winedevice.exe, services.exe, plugplay.exe, and other Wine
+  # helper processes it manages, then exit itself.
   WINEPREFIX="${WINEPREFIX}" "${WINESERVER}" -k 2>/dev/null || true
+
+  # Give wineserver a moment to reap its children before force-killing.
   sleep 0.5
+
+  # Force-kill any Wine helper processes that did not exit after wineserver -k.
+  # These are safe to kill by name — they only ever run as Wine internals and
+  # do not conflict with other system processes of the same name.
+  pkill -KILL -x "winedevice.exe" 2>/dev/null || true
+  pkill -KILL -x "services.exe"   2>/dev/null || true
+  pkill -KILL -x "plugplay.exe"   2>/dev/null || true
+  pkill -KILL -x "wineserver"     2>/dev/null || true
 
   # Remove temp files created during this launcher session.
   [[ -n "${_bootstrap_tmp:-}" ]] && rm -f "${_bootstrap_tmp}"
