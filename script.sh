@@ -179,7 +179,7 @@ readonly LAUNCHER_SCRIPT="${HOME}/.local/bin/cluckers-central.sh"
 # (GNOME, KDE, etc.) so you can launch it just like a native Linux app.
 readonly DESKTOP_FILE="${HOME}/.local/share/applications/cluckers-central.desktop"
 readonly ICON_DIR="${HOME}/.local/share/icons"
-readonly ICON_PATH="${ICON_DIR}/cluckers-central.ico"
+readonly ICON_PATH="${ICON_DIR}/cluckers-central.png"
 
 readonly APP_NAME="Cluckers Central"
 
@@ -220,7 +220,10 @@ readonly STEAM_GRID_PATH="${STEAM_ASSETS_DIR}/grid.jpg"
 readonly STEAM_HERO_PATH="${STEAM_ASSETS_DIR}/hero.jpg"
 readonly STEAM_WIDE_PATH="${STEAM_ASSETS_DIR}/wide.jpg"
 readonly STEAM_HEADER_PATH="${STEAM_ASSETS_DIR}/header.jpg"
+# The icon is downloaded as .ico (Steam CDN format) and then we extract the
+# largest embedded PNG frame for use as the desktop icon and Steam shortcut icon.
 readonly STEAM_ICON_PATH="${STEAM_ASSETS_DIR}/icon.ico"
+readonly STEAM_ICON_PNG_PATH="${STEAM_ASSETS_DIR}/icon.png"
 
 # Directory where the two helper .exe / .dll binaries are stored after setup.
 readonly TOOLS_DIR="${HOME}/.local/share/cluckers-central/tools"
@@ -1208,13 +1211,11 @@ def compute_shortcut_id(exe: str, name: str) -> int:
 
 
 unsigned_id    = compute_shortcut_id(LAUNCHER, APP_NAME)
-# Modern Steam (post-2019) uses (unsigned_id << 32) | 0x02000000 for grid/ filenames.
-long_id        = (unsigned_id << 32) | 0x02000000
 shortcut_appid = (
     unsigned_id - 4294967296 if unsigned_id > 2147483647 else unsigned_id
 )
-# Both ID formats need to be cleaned up during uninstall.
-grid_appids    = [str(long_id), str(unsigned_id)]
+# The grid/ filename prefix is the 32-bit unsigned CRC — same as installer.
+grid_appid     = str(unsigned_id)
 
 # -- shortcuts.vdf ----------------------------------------------------------
 shortcuts_path = os.path.join(USER_CONFIG_DIR, "shortcuts.vdf")
@@ -1307,12 +1308,11 @@ art_names = [
     "_logo.png", "_logo.jpg",  # Clear logo
     "_header.jpg", "_header.png",  # Small header
 ]
-for grid_id in grid_appids:
-    for name in art_names:
-        art = os.path.join(grid_dir, f"{grid_id}{name}")
-        if os.path.exists(art):
-            os.remove(art)
-            removed += 1
+for name in art_names:
+    art = os.path.join(grid_dir, f"{grid_appid}{name}")
+    if os.path.exists(art):
+        os.remove(art)
+        removed += 1
 if removed:
     print(f"{_OK} Removed custom Steam artwork ({removed} file(s)).")
 PYEOF
@@ -3703,14 +3703,23 @@ XDLL_B64_EOF
     curl ${CURL_FLAGS}f -o "${STEAM_WIDE_PATH}"   "${STEAM_WIDE_URL}"   || true
     curl ${CURL_FLAGS}f -o "${STEAM_HEADER_PATH}" "${STEAM_HEADER_URL}" || true
 
-    # The icon is an .ico file from Steam CDN. We save it as STEAM_ICON_PATH and
-    # also copy it to ICON_PATH so the .desktop shortcut uses the same image.
-    # Desktop environments (GNOME, KDE, XFCE) all support .ico for app icons.
-    if curl ${CURL_FLAGS}f -o "${STEAM_ICON_PATH}" "${STEAM_ICON_URL}"; then
-      cp "${STEAM_ICON_PATH}" "${ICON_PATH}"
+    # Download the game icon (.ico) from Steam CDN and keep it as a reference.
+    # Steam's community icon for Realm Royale is a tiny 32x32 BMP-encoded .ico
+    # with no embedded PNG frames, so it is not suitable for modern displays.
+    # Instead we use the high-resolution logo_2x.png (already downloaded above
+    # as STEAM_LOGO_PATH) as the desktop icon and Steam shortcut icon — it is a
+    # full-resolution transparent PNG that renders crisply at any size.
+    curl ${CURL_FLAGS}f -o "${STEAM_ICON_PATH}" "${STEAM_ICON_URL}" || true
+
+    # Copy the logo PNG as the desktop application icon. The .desktop spec
+    # supports any image format that the desktop environment's icon theme can
+    # load; PNG is universally supported by GNOME, KDE, XFCE, and others.
+    if [[ -f "${STEAM_LOGO_PATH}" ]]; then
+      cp "${STEAM_LOGO_PATH}" "${STEAM_ICON_PNG_PATH}"
+      cp "${STEAM_ICON_PNG_PATH}" "${ICON_PATH}"
       ok_msg "High-quality Steam assets downloaded."
     else
-      warn_msg "Steam CDN icon unavailable — desktop shortcut will use a fallback icon."
+      warn_msg "Logo PNG unavailable — desktop shortcut will use a fallback icon."
     fi
   fi
 
@@ -4273,20 +4282,29 @@ EOF
   local steam_root=""
   local skip_steam="false"
 
-  # Check if Steam is running. Steam must be closed to write to shortcuts.vdf reliably.
-  if pgrep -x "steam" > /dev/null; then
+  # If Steam is currently running, its shortcuts.vdf is held open and will be
+  # overwritten when Steam exits — wiping any changes we write now. We warn the
+  # user and give them a chance to close Steam before we proceed. We never
+  # launch or kill Steam ourselves; that's the user's decision.
+  if pgrep -x "steam" > /dev/null 2>&1; then
     warn_msg "Steam is currently running."
-    warn_msg "Exiting Steam is required for the shortcut to be saved correctly."
-    warn_msg "You can close Steam via: Steam menu > Exit (or click the tray icon and Exit)."
-    warn_msg "Otherwise, Steam may overwrite your shortcuts file when it eventually closes."
+    warn_msg "Steam holds shortcuts.vdf open and will overwrite it when it closes."
+    warn_msg "For the shortcut to survive, close Steam first:"
+    warn_msg "  Steam menu → Exit  (or right-click the tray icon → Exit Steam)"
+    warn_msg "You can also re-run this script after closing Steam."
     if [[ "${auto_mode}" == "false" ]]; then
-      printf "\n  [PROMPT] Close Steam, then press ENTER to continue (or type 'skip'): "
+      printf "\n  [PROMPT] Press ENTER when Steam is closed (or type 'skip' to skip): "
       local choice=""
       read -r choice
       if [[ "${choice,,}" == "skip" ]]; then
         info_msg "Skipping Steam integration (user requested)."
         skip_steam="true"
       fi
+    else
+      # In auto mode we write the shortcut anyway. Steam will overwrite it on
+      # exit but the files are correct — the user can restart Steam afterwards
+      # and the shortcut will appear on the next launch.
+      info_msg "Auto mode: writing Steam shortcut now. Restart Steam afterwards to see it."
     fi
   fi
 
@@ -4334,6 +4352,7 @@ EOF
       STEAM_WIDE_PATH_ENV="${STEAM_WIDE_PATH}" \
       STEAM_HEADER_PATH_ENV="${STEAM_HEADER_PATH}" \
       STEAM_ICON_PATH_ENV="${STEAM_ICON_PATH}" \
+      STEAM_ICON_PNG_PATH_ENV="${STEAM_ICON_PNG_PATH}" \
       python3 - << 'PYEOF'
 """Adds Cluckers Central to Steam as a non-Steam shortcut."""
 
@@ -4353,6 +4372,7 @@ STEAM_HERO      = os.environ["STEAM_HERO_PATH_ENV"]
 STEAM_LOGO      = os.environ["STEAM_LOGO_PATH_ENV"]
 STEAM_WIDE      = os.environ["STEAM_WIDE_PATH_ENV"]
 STEAM_HEADER    = os.environ["STEAM_HEADER_PATH_ENV"]
+STEAM_ICON_PNG  = os.environ.get("STEAM_ICON_PNG_PATH_ENV", "")
 
 _OK   = "  [\033[0;32m OK \033[0m]"
 _WARN = "  [\033[1;33mWARN\033[0m]"
@@ -4396,12 +4416,19 @@ try:
     for k in keys_to_delete:
         del sc[k]
 
-    # Steam requires Exe and StartDir to be quoted strings, just like the
-    # Windows launcher uses them. Without quotes Steam may not launch the app.
-    # Source: https://github.com/nicowillis/steam-rom-manager behaviour
+    # Steam requires Exe and StartDir to be quoted strings in shortcuts.vdf.
+    # Without quotes Steam may fail to launch the non-Steam shortcut.
+    # Source: Valve's internal format, reproduced by steam-rom-manager.
     quoted_exe = f'"{LAUNCHER}"'
     start_dir  = f'"{os.path.dirname(LAUNCHER)}"'
-    icon_path  = os.environ.get("STEAM_ICON_PATH_ENV", ICON_PATH)
+    # Prefer the extracted PNG for the icon field — it renders at full
+    # resolution in the Steam library. Fall back to the raw .ico if PNG
+    # extraction did not run (e.g. no Python during asset download step).
+    icon_path = (
+        STEAM_ICON_PNG
+        if STEAM_ICON_PNG and os.path.exists(STEAM_ICON_PNG)
+        else os.environ.get("STEAM_ICON_PATH_ENV", ICON_PATH)
+    )
 
     next_key = str(len(sc))
     sc[next_key] = {
@@ -4464,20 +4491,20 @@ try:
         STEAM_HEADER: "_header",  # Small header     (460×215)
     }
 
-    # Build the two ID formats used by different Steam versions.
-    long_id      = (unsigned_id << 32) | 0x02000000  # Modern (64-bit)
-    legacy_id    = unsigned_id                        # Legacy (32-bit unsigned)
-
+    # Steam uses the 32-bit unsigned CRC as the prefix for grid/ filenames.
+    # Verified against: steam-rom-manager, Lutris, Heroic Games Launcher.
+    # Example filename: 2990937161p.jpg  (unsigned_id + suffix + ext)
+    # Do NOT use the 64-bit (unsigned_id << 32 | 0x02000000) here — that is
+    # the internal AppID used in shortcuts.vdf, not the grid/ filename prefix.
     for src, suffix in art_map.items():
         if not os.path.exists(src):
             continue
         ext = os.path.splitext(src)[1]
-        for aid in (str(long_id), str(legacy_id)):
-            dest = os.path.join(grid_dir, f"{aid}{suffix}{ext}")
-            try:
-                shutil.copy2(src, dest)
-            except Exception:
-                pass
+        dest = os.path.join(grid_dir, f"{unsigned_id}{suffix}{ext}")
+        try:
+            shutil.copy2(src, dest)
+        except Exception:
+            pass
 
     # -- localconfig.vdf: set logo position ---------------------------------
     localconfig_path = os.path.join(USER_CONFIG_DIR, "localconfig.vdf")
