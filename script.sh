@@ -4072,6 +4072,16 @@ export CLUCKERS_ROOT="${CLUCKERS_ROOT}"
 export WINEPREFIX="${WINEPREFIX}"
 export WINEARCH="win64"
 
+# Setup-time variables baked in as plain strings.
+USE_GAMESCOPE="${use_gamescope}"
+GS_ARGS="${GAMESCOPE_ARGS}"
+GAME_DIR="${GAME_DIR}"
+GAME_EXE_REL="${GAME_EXE_REL}"
+TOOLS_DIR="${TOOLS_DIR}"
+GATEWAY_URL="${GATEWAY_URL:-https://gateway-dev.project-crown.com}"
+HOST_X="${HOST_X:-157.90.131.105}"
+CREDS_FILE="${CLUCKERS_ROOT}/credentials.enc"
+
 # Suppress noisy Wine debug output. Set to "" to see full Wine diagnostics.
 export WINEDEBUG="-all"
 
@@ -4163,19 +4173,8 @@ $(if [[ "${_is_proton}" == "true" ]]; then
   fi
 fi)
 
-GAME_DIR="${GAME_DIR}"
-GAME_EXE_REL="${GAME_EXE_REL}"
-TOOLS_DIR="${TOOLS_DIR}"
-
 # Ensure we run from the game directory for consistency.
 cd "\${GAME_DIR}"
-
-USE_GAMESCOPE="${use_gamescope}"
-GS_ARGS="${GAMESCOPE_ARGS}"
-GATEWAY_URL="${GATEWAY_URL:-https://gateway-dev.project-crown.com}"
-HOST_X="${HOST_X:-157.90.131.105}"
-CREDS_FILE="${CLUCKERS_ROOT}/credentials.enc"
-
 
 # Gamescope PID (if used).
 _GS_PID=""    # PID of gamescope process group leader (gamescope path)
