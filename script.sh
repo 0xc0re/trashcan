@@ -1710,6 +1710,17 @@ ZIPBLAKE3EOF
     fi
   fi
 
+  # ---- Prepare for extraction ------------------------------------------------
+  # If any existing game files are read-only, extraction will fail with
+  # "Permission denied" when the tool tries to overwrite them. This matches
+  # the fix applied in Cluckers fix-35 (commit cd25d215): before extracting,
+  # find all read-only regular files in GAME_DIR and make them user-writable.
+  # This is safe because we are about to overwrite them with newer versions.
+  if [[ -d "${GAME_DIR}" ]]; then
+    info_msg "Ensuring game files are writable before extraction..."
+    find "${GAME_DIR}" -type f ! -writable -exec chmod u+w {} + 2>/dev/null || true
+  fi
+
   # ---- Extract in place -------------------------------------------------------
   info_msg "Extracting update (this may take several minutes)..."
   if command -v bsdtar >/dev/null 2>&1; then
@@ -3746,40 +3757,64 @@ XDLL_B64_EOF
       ok_msg "Game ICO downloaded."
       # Convert the ICO to PNG and install it into the XDG hicolor icon theme.
       #
-      # We install into two size slots:
-      #   32x32   — the ICO's native size, used by most panel/taskbar renderers.
-      #   256x256 — upscaled copy for HiDPI desktops (GNOME, KDE Plasma).
-      #
-      # We also copy the PNG to ICON_PATH (~/.local/share/icons/cluckers-central.png)
-      # as a flat fallback, because some desktop environments (notably older XFCE
-      # and Cinnamon) look for the icon by the absolute path set in the Icon= field
-      # before consulting the theme cache.
+      # The Steam community ICO is 32×32 (single frame). Upscaling it to fill
+      # the 256×256 hicolor slot produces a blurry result. Instead, we:
+      #   1. Install the ICO's native 32×32 frame into the 32x32 hicolor slot
+      #      — used by taskbars, window decorations, and small launchers.
+      #   2. Convert the high-resolution portrait poster (600×900 JPG) to PNG
+      #      and crop/resize it to 256×256 for the 256x256 hicolor slot
+      #      — used by application grids and HiDPI desktops.
+      #   3. Copy the 256×256 PNG to ICON_PATH as an absolute-path fallback,
+      #      because some desktop environments (older XFCE, Cinnamon) resolve
+      #      the Icon= field by absolute path before consulting the theme cache.
       #
       # If Pillow is unavailable, ImageMagick's `convert` is tried as a fallback.
-      # If neither is available, the portrait poster JPG is used as a last resort.
+      # If neither is available, the portrait poster JPG is copied as a last resort.
       local _ico_ok="false"
       python3 - "${STEAM_ICO_PATH}" \
+               "${STEAM_GRID_PATH}" \
                "${_hicolor_32}/${_icon_name}.png" \
                "${_hicolor_256}/${_icon_name}.png" \
                "${ICON_PATH}" << 'ICO2PNG_EOF' && _ico_ok="true" || true
-import sys, shutil
+import sys, shutil, os
 try:
     from PIL import Image
-    ico      = sys.argv[1]
-    out_32   = sys.argv[2]
-    out_256  = sys.argv[3]
-    out_flat = sys.argv[4]
-    img = Image.open(ico)
-    # Use ico.getimage() to pick the largest frame from multi-frame ICO files.
-    if hasattr(img, 'ico') and img.ico.sizes():
-        best = max(img.ico.sizes(), key=lambda s: s[0] * s[1])
-        img = img.ico.getimage(best)
-    img = img.convert("RGBA")
-    img.save(out_32,   "PNG")
-    img.resize((256, 256), Image.LANCZOS).save(out_256, "PNG")
-    # Flat fallback copy — some DEs resolve the icon by absolute path.
-    shutil.copy2(out_32, out_flat)
-    print(f"[icon] Installed {img.width}x{img.height} → hicolor 32x32, 256x256, and flat fallback.")
+
+    ico_path    = sys.argv[1]
+    poster_path = sys.argv[2]
+    out_32      = sys.argv[3]
+    out_256     = sys.argv[4]
+    out_flat    = sys.argv[5]
+
+    # --- 32x32 slot: extract the native frame from the ICO ---
+    ico_img = Image.open(ico_path)
+    if hasattr(ico_img, 'ico') and ico_img.ico.sizes():
+        best = max(ico_img.ico.sizes(), key=lambda s: s[0] * s[1])
+        ico_img = ico_img.ico.getimage(best)
+    ico_img = ico_img.convert("RGBA")
+    ico_img.save(out_32, "PNG")
+
+    # --- 256x256 slot: use the high-res portrait poster for a crisp result ---
+    # The ICO is only 32x32; upscaling it produces a blurry icon. The portrait
+    # poster is 600x900, so we centre-crop it to a square and resize to 256x256.
+    if os.path.isfile(poster_path):
+        poster = Image.open(poster_path).convert("RGBA")
+        w, h   = poster.size
+        # Centre-crop to a square using the smaller dimension.
+        side   = min(w, h)
+        left   = (w - side) // 2
+        top    = (h - side) // 2
+        poster = poster.crop((left, top, left + side, top + side))
+        poster = poster.resize((256, 256), Image.LANCZOS)
+        poster.save(out_256, "PNG")
+        # Use the crisp 256x256 as the flat fallback for absolute-path DEs.
+        shutil.copy2(out_256, out_flat)
+        print(f"[icon] 32x32 from ICO, 256x256 from portrait poster → hicolor + flat fallback.")
+    else:
+        # Poster not yet downloaded — fall back to upscaling the ICO.
+        ico_img.resize((256, 256), Image.LANCZOS).save(out_256, "PNG")
+        shutil.copy2(out_32, out_flat)
+        print(f"[icon] 32x32 from ICO, 256x256 upscaled (poster unavailable).")
 except ImportError:
     print("[icon] Pillow not available — trying ImageMagick fallback.", file=sys.stderr)
     sys.exit(1)
@@ -3790,15 +3825,30 @@ ICO2PNG_EOF
 
       # ImageMagick fallback: used when Pillow is not installed.
       if [[ "${_ico_ok}" == "false" ]] && command_exists convert; then
-        convert "${STEAM_ICO_PATH}[0]" "${_hicolor_32}/${_icon_name}.png" 2>/dev/null \
-          && convert "${STEAM_ICO_PATH}[0]" -resize 256x256 "${_hicolor_256}/${_icon_name}.png" 2>/dev/null \
-          && cp "${_hicolor_32}/${_icon_name}.png" "${ICON_PATH}" \
-          && _ico_ok="true" \
-          || true
-        [[ "${_ico_ok}" == "true" ]] && ok_msg "Game icon installed via ImageMagick."
+        # 32x32 from ICO native frame.
+        convert "${STEAM_ICO_PATH}[0]" "${_hicolor_32}/${_icon_name}.png" 2>/dev/null || true
+        # 256x256 from portrait poster (crop to square then resize).
+        if [[ -f "${STEAM_GRID_PATH}" ]]; then
+          convert "${STEAM_GRID_PATH}" \
+            -gravity Center -extent "$(convert "${STEAM_GRID_PATH}" -format "%[fx:min(w,h)]x%[fx:min(w,h)]" info: 2>/dev/null || echo '600x600')+0+0" \
+            -resize 256x256 \
+            "${_hicolor_256}/${_icon_name}.png" 2>/dev/null || true
+        else
+          convert "${STEAM_ICO_PATH}[0]" -resize 256x256 \
+            "${_hicolor_256}/${_icon_name}.png" 2>/dev/null || true
+        fi
+        if [[ -f "${_hicolor_256}/${_icon_name}.png" ]]; then
+          cp "${_hicolor_256}/${_icon_name}.png" "${ICON_PATH}"
+          _ico_ok="true"
+          ok_msg "Game icon installed via ImageMagick."
+        elif [[ -f "${_hicolor_32}/${_icon_name}.png" ]]; then
+          cp "${_hicolor_32}/${_icon_name}.png" "${ICON_PATH}"
+          _ico_ok="true"
+          ok_msg "Game icon (32x32 only) installed via ImageMagick."
+        fi
       fi
 
-      # Last resort: use the portrait poster JPG as the desktop icon.
+      # Last resort: copy the portrait poster as the desktop icon.
       if [[ "${_ico_ok}" == "false" ]] && [[ -f "${STEAM_GRID_PATH}" ]]; then
         cp "${STEAM_GRID_PATH}" "${ICON_PATH}"
         warn_msg "Using portrait poster as desktop icon (Pillow and ImageMagick unavailable)."
