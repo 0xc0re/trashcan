@@ -2975,8 +2975,8 @@ EOF
   # If we are using Proton, ensure there are no conflicting real files
   # where Proton expects to place symlinks. Proton's prefix upgrade creates
   # symlinks from its bundled files into the Wine prefix; if a prior Wine or
-  # older Proton left real files at those paths, os.symlink() in Proton's
-  # Python script raises FileExistsError. We use Proton's own default_pfx
+  # older Proton left real files (or stale symlinks from cp -r) at those
+  # paths, os.symlink() in Proton's Python script raises FileExistsError. We use Proton's own default_pfx
   # template to identify which paths should be symlinks — this is robust
   # across all Proton versions without maintaining a hardcoded file list.
   if [[ "${_is_proton}" == "true" ]] && [[ -d "${WINEPREFIX}/drive_c" ]]; then
@@ -2988,11 +2988,12 @@ EOF
       info_msg "Checking prefix for symlink conflicts against Proton template..."
       local _conflict_count=0
       # Find every symlink in default_pfx, check if the corresponding path
-      # in WINEPREFIX exists as a regular file (not a symlink). If so, remove it.
+      # in WINEPREFIX already exists (file OR symlink). Proton's os.symlink()
+      # fails on any existing entry, not just regular files.
       while IFS= read -r -d '' _tmpl_link; do
         local _rel_path="${_tmpl_link#"${cleanup_template}"/}"
         local _pfx_path="${WINEPREFIX}/${_rel_path}"
-        if [[ -f "${_pfx_path}" ]] && [[ ! -L "${_pfx_path}" ]]; then
+        if [[ -e "${_pfx_path}" ]] || [[ -L "${_pfx_path}" ]]; then
           rm -f "${_pfx_path}"
           (( _conflict_count++ )) || true
         fi
@@ -3990,7 +3991,7 @@ if [[ -n "${PROTON_SCRIPT}" ]]; then
     while IFS= read -r -d '' _tl; do
       _rel="${_tl#"${_pfx_template}"/}"
       _target="${WINEPREFIX}/${_rel}"
-      if [[ -f "${_target}" ]] && [[ ! -L "${_target}" ]]; then
+      if [[ -e "${_target}" ]] || [[ -L "${_target}" ]]; then
         rm -f "${_target}"
         (( _cleaned++ )) || true
       fi
