@@ -2979,7 +2979,12 @@ EOF
   # paths, os.symlink() in Proton's Python script raises FileExistsError. We use Proton's own default_pfx
   # template to identify which paths should be symlinks — this is robust
   # across all Proton versions without maintaining a hardcoded file list.
-  if [[ "${_is_proton}" == "true" ]] && [[ -d "${WINEPREFIX}/drive_c" ]]; then
+  # Only clean up when Proton's creation_sync_guard is absent — that's when
+  # copy_pfx() will run and need a clean slate. Once copy_pfx() succeeds it
+  # writes creation_sync_guard, and subsequent runs use update_builtin_libs()
+  # which handles existing files correctly on its own.
+  if [[ "${_is_proton}" == "true" ]] && [[ -d "${WINEPREFIX}/drive_c" ]] \
+     && [[ ! -f "${WINEPREFIX}/creation_sync_guard" ]]; then
     local proton_root_for_cleanup
     proton_root_for_cleanup="$(dirname "$(dirname "$(dirname "${real_wine_path}")")")"
     local cleanup_template=""
@@ -3975,7 +3980,11 @@ fi
 # at those paths, Proton's os.symlink() raises FileExistsError. We resolve
 # this by scanning Proton's default_pfx template for symlinks and removing any
 # corresponding real files from our prefix before Proton runs.
-if [[ -n "${PROTON_SCRIPT}" ]]; then
+# Only clean up when Proton's creation_sync_guard is absent — that's when
+# copy_pfx() will run and need a clean slate. Once copy_pfx() succeeds it
+# writes creation_sync_guard, and subsequent runs use update_builtin_libs()
+# which handles existing files correctly on its own.
+if [[ -n "${PROTON_SCRIPT}" ]] && [[ ! -f "${WINEPREFIX}/creation_sync_guard" ]]; then
   _proton_root="$(dirname "${PROTON_SCRIPT}")"
   _pfx_template=""
   for _cand in \
