@@ -2275,6 +2275,38 @@ DECK_LAYOUT_EOF
 
   ok_msg "Game patches applied."
 }
+# find_proton_template <proton_root> <out_var>
+# Searches for Proton's default_pfx directory under the given root.
+# Sets <out_var> to the path if found, or "" if not found.
+#
+# Proton stores its prefix template in different locations depending on the
+# build (Steam, GE, AUR package, etc.). This function checks all known
+# candidates and returns the first match.
+#
+# Arguments:
+#   $1  Path to the Proton installation root.
+#   $2  Name of the variable to receive the template path.
+#
+# Returns:
+#   0 if a template was found, 1 otherwise.
+find_proton_template() {
+  local root="$1"
+  local -n _out_template=$2
+  _out_template=""
+  local _cand
+  for _cand in \
+    "${root}/dist/share/default_pfx" \
+    "${root}/files/share/default_pfx" \
+    "${root}/files/default_pfx" \
+    "${root}/share/default_pfx" \
+    "${root}/default_pfx"; do
+    if [[ -d "${_cand}" ]]; then
+      _out_template="${_cand}"
+      return 0
+    fi
+  done
+  return 1
+}
 # Finds the best available Wine or Proton-GE binary on this system.
 #
 # Proton-GE is a community-built version of Proton (Valve's Windows-game
@@ -2941,25 +2973,46 @@ EOF
   step_msg "Step 3 — Initialising Wine prefix..."
 
   # If we are using Proton, ensure there are no conflicting real files
-  # where Proton expects to place symlinks (e.g. iexplore.exe).
-  # Proton will crash with FileExistsError if it can't create these symlinks.
+  # where Proton expects to place symlinks. Proton's prefix upgrade creates
+  # symlinks from its bundled files into the Wine prefix; if a prior Wine or
+  # older Proton left real files at those paths, os.symlink() in Proton's
+  # Python script raises FileExistsError. We use Proton's own default_pfx
+  # template to identify which paths should be symlinks — this is robust
+  # across all Proton versions without maintaining a hardcoded file list.
   if [[ "${_is_proton}" == "true" ]] && [[ -d "${WINEPREFIX}/drive_c" ]]; then
-    info_msg "Cleaning up existing prefix for Proton upgrade/use..."
-    # Remove real files that should be symlinks in a Proton prefix.
-    # We use a broad list of system files that Proton typically symlinks.
-    find "${WINEPREFIX}/drive_c" -type f \( \
-      -path "*/Internet Explorer/iexplore.exe" -o \
-      -path "*/system32/notepad.exe" -o \
-      -path "*/system32/winhlp32.exe" -o \
-      -path "*/system32/winebrowser.exe" -o \
-      -path "*/system32/wineconsole.exe" -o \
-      -path "*/system32/winedbg.exe" -o \
-      -path "*/system32/winefile.exe" -o \
-      -path "*/system32/winemine.exe" -o \
-      -path "*/system32/regedit.exe" -o \
-      -path "*/system32/cmd.exe" -o \
-      -path "*/system32/control.exe" \
-    \) -not -type l -delete 2>/dev/null || true
+    local proton_root_for_cleanup
+    proton_root_for_cleanup="$(dirname "$(dirname "$(dirname "${real_wine_path}")")")"
+    local cleanup_template=""
+    find_proton_template "${proton_root_for_cleanup}" cleanup_template
+    if [[ -n "${cleanup_template}" ]]; then
+      info_msg "Checking prefix for symlink conflicts against Proton template..."
+      local _conflict_count=0
+      # Find every symlink in default_pfx, check if the corresponding path
+      # in WINEPREFIX exists as a regular file (not a symlink). If so, remove it.
+      while IFS= read -r -d '' _tmpl_link; do
+        local _rel_path="${_tmpl_link#"${cleanup_template}"/}"
+        local _pfx_path="${WINEPREFIX}/${_rel_path}"
+        if [[ -f "${_pfx_path}" ]] && [[ ! -L "${_pfx_path}" ]]; then
+          rm -f "${_pfx_path}"
+          (( _conflict_count++ )) || true
+        fi
+      done < <(find "${cleanup_template}" -type l -print0 2>/dev/null)
+      if (( _conflict_count > 0 )); then
+        ok_msg "Removed ${_conflict_count} conflicting file(s) that Proton needs to replace with symlinks."
+      fi
+    else
+      # Fallback: no template found. Remove the most common offenders.
+      # This covers the case where default_pfx is missing (unusual).
+      info_msg "No Proton template found — removing known symlink conflict files..."
+      find "${WINEPREFIX}/drive_c" -type f \( \
+        -path "*/Internet Explorer/iexplore.exe" -o \
+        -path "*/system32/notepad.exe" -o \
+        -path "*/system32/winhlp32.exe" -o \
+        -path "*/system32/cmd.exe" -o \
+        -path "*/system32/control.exe" -o \
+        -path "*/system32/regedit.exe" \
+      \) -not -type l -delete 2>/dev/null || true
+    fi
   fi
 
   if [[ -d "${WINEPREFIX}/drive_c" ]]; then
@@ -2975,19 +3028,7 @@ EOF
       # find_wine resolves real_wine_path to something like .../Proton/files/bin/wine
       local proton_root
       proton_root="$(dirname "$(dirname "$(dirname "${real_wine_path}")")")"
-      # Steam's Proton uses .../Proton/dist/share/default_pfx or .../Proton/files/share/default_pfx
-      # The AUR proton-ge-custom-bin package uses files/share/default_pfx
-      if [[ -d "${proton_root}/dist/share/default_pfx" ]]; then
-        proton_template="${proton_root}/dist/share/default_pfx"
-      elif [[ -d "${proton_root}/files/share/default_pfx" ]]; then
-        proton_template="${proton_root}/files/share/default_pfx"
-      elif [[ -d "${proton_root}/files/default_pfx" ]]; then
-        proton_template="${proton_root}/files/default_pfx"
-      elif [[ -d "${proton_root}/share/default_pfx" ]]; then
-        proton_template="${proton_root}/share/default_pfx"
-      elif [[ -d "${proton_root}/default_pfx" ]]; then
-        proton_template="${proton_root}/default_pfx"
-      fi
+      find_proton_template "${proton_root}" proton_template
     fi
 
     if [[ -n "${proton_template}" ]]; then
