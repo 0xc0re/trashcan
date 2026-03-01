@@ -3460,9 +3460,11 @@ BLAKE3EOF
   #
   # ==============================================================================
   # SOURCE CODE: shm_launcher.c (https://github.com/0xc0re/cluckers/blob/master/tools/shm_launcher.c)
-  # Updated 2026-02-28: Replaced embedded source and base64 with the latest version
-  #                     which includes launch-config.txt parsing support to fix
-  #                     issues matching the cluckers repo.
+  #
+  # The embedded shm_launcher.c source and corresponding base64 payload
+  # (found below under SHM_B64_EOF) are synced with the latest upstream
+  # version to include launch-config.txt parsing support, ensuring exact
+  # feature parity with the official cluckers repository.
   # ==============================================================================
 #   /*
 #    * shm_launcher.c - Creates a named shared memory section with content bootstrap
