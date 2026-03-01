@@ -3968,6 +3968,37 @@ if [[ -s "${_bootstrap_tmp}" ]]; then
   _game_args+=("-content_bootstrap_shm=${_shm_name}")
 fi
 
+# ---- Proton pre-flight -----------------------------------------------------
+# When Proton upgrades a prefix, it replaces certain files with symlinks back
+# to its own bundled copies. If a previous Wine/Proton version left real files
+# at those paths, Proton's os.symlink() raises FileExistsError. We resolve
+# this by scanning Proton's default_pfx template for symlinks and removing any
+# corresponding real files from our prefix before Proton runs.
+if [[ -n "${PROTON_SCRIPT}" ]]; then
+  _proton_root="$(dirname "${PROTON_SCRIPT}")"
+  _pfx_template=""
+  for _cand in \
+    "${_proton_root}/dist/share/default_pfx" \
+    "${_proton_root}/files/share/default_pfx" \
+    "${_proton_root}/files/default_pfx" \
+    "${_proton_root}/share/default_pfx" \
+    "${_proton_root}/default_pfx"; do
+    if [[ -d "${_cand}" ]]; then _pfx_template="${_cand}"; break; fi
+  done
+  if [[ -n "${_pfx_template}" ]] && [[ -d "${WINEPREFIX}/drive_c" ]]; then
+    _cleaned=0
+    while IFS= read -r -d '' _tl; do
+      _rel="${_tl#"${_pfx_template}"/}"
+      _target="${WINEPREFIX}/${_rel}"
+      if [[ -f "${_target}" ]] && [[ ! -L "${_target}" ]]; then
+        rm -f "${_target}"
+        (( _cleaned++ )) || true
+      fi
+    done < <(find "${_pfx_template}" -type l -print0 2>/dev/null)
+    (( _cleaned > 0 )) && printf '[INFO] Removed %d symlink conflict(s) before Proton launch.\n' "${_cleaned}" >&2
+  fi
+fi
+
 # ---- Launch ---------------------------------------------------------------
 
 # Prepare final command.
