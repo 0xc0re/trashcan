@@ -83,24 +83,19 @@
 #    GAME_VERSION=0.36.9999.0 ./cluckers-setup.sh
 #
 #  REPRODUCIBLE BINARIES
-#    Two small Windows helper binaries are embedded in this script as base64:
+#    Two small Windows helper binaries are downloaded from GitHub Releases
+#    and SHA-256 verified at runtime:
 #
 #    shm_launcher.exe  — creates a named Windows shared memory region
 #                        containing the content bootstrap blob that the game
 #                        reads on startup.
-#                        Source: https://github.com/0xc0re/cluckers/blob/master/internal/launch/shm.go
 #
 #    xinput1_3.dll     — remaps controller input so all buttons work correctly
 #                        under Wine/Proton.
-#                        Source: https://github.com/0xc0re/cluckers/blob/master/internal/launch/deckconfig.go
 #
-#    To verify you get the same bytes and review the exact source code used
-#    to build them (without needing to decode the base64), please see the
-#    "REPRODUCIBLE BUILDS" and "SOURCE CODE" sections inside Step 6 of the
-#    main() function (search this file for "REPRODUCIBLE BUILDS").
-#    The source code is embedded directly in this script as comments, along
-#    with full step-by-step build and verification instructions, and links to
-#    the official source at https://github.com/0xc0re/cluckers
+#    Both are built from auditable C source in CI (GitHub Actions) using
+#    mingw-w64. Source code, build workflow, and releases:
+#      https://github.com/0xc0re/trashcan
 #
 # ==============================================================================
 
@@ -271,21 +266,20 @@ readonly STEAM_ICO_PATH="${STEAM_ASSETS_DIR}/icon.ico"
 # Directory where the two helper .exe / .dll binaries are stored after setup.
 readonly TOOLS_DIR="${HOME}/.local/share/cluckers-central/tools"
 
-# SHA-256 checksums for the two Windows helper binaries embedded in this script.
-# SHA-256 is a fingerprint algorithm: if even one byte of a file changes, the
-# fingerprint changes completely. We compare the fingerprint after decoding the
-# embedded binary to guarantee you are running exactly the code we compiled —
-# not a modified or corrupted version. See the REPRODUCIBLE BUILDS section
-# inside Step 6 for full instructions on compiling and verifying yourself.
+# SHA-256 checksums for the two Windows helper binaries downloaded from GitHub
+# Releases. SHA-256 is a fingerprint algorithm: if even one byte of a file
+# changes, the fingerprint changes completely. We compare the fingerprint after
+# downloading to guarantee you are running exactly the code we compiled — not a
+# modified or corrupted version.
 readonly SHM_LAUNCHER_SHA256="de1490b362ccd84dc0e7196e61abd883f22f1dfd24d2337edfee3fddb104c0b2"
 readonly XINPUT_DLL_SHA256="2f7aa905ba178b4f08f026b0092a4ce8e04af44cf6a750ae31bbcaec946611f6"
 
-# SHA-256 fingerprint of the embedded Steam Deck controller layout template.
-# Verified after extraction to confirm the embedded data was not corrupted.
+# SHA-256 fingerprint of the Steam Deck controller layout template
+# (config/controller_neptune.vdf). Verified after copying to confirm integrity.
 readonly CONTROLLER_LAYOUT_SHA256="779194a12bf6a353e8931b17298d930f60e83126aa1a357dc6597d81dfd61709"
 
 # GitHub Release download URLs for CI-built helper binaries.
-# These replace the base64-embedded blobs that were previously decoded inline.
+# CI-built binaries are downloaded and SHA-256 verified at runtime.
 readonly RELEASE_TAG="v0.1.0"
 readonly RELEASE_BASE="https://github.com/0xc0re/trashcan/releases/download/${RELEASE_TAG}"
 readonly SHM_LAUNCHER_URL="${RELEASE_BASE}/shm_launcher.exe"
