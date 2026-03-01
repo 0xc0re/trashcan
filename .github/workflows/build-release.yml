@@ -1,0 +1,47 @@
+name: Build and Release Windows Binaries
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install MinGW cross-compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: Compile shm_launcher.exe
+        run: |
+          x86_64-w64-mingw32-gcc -O2 -Wall -municode \
+            -Wl,--subsystem,windows \
+            -Wl,--no-insert-timestamp \
+            -o shm_launcher.exe tools/shm_launcher.c
+
+      - name: Compile xinput1_3.dll
+        run: |
+          x86_64-w64-mingw32-gcc -O2 -Wall -shared \
+            -Wl,--no-insert-timestamp \
+            -o xinput1_3.dll tools/xinput_remap.c tools/xinput1_3.def
+
+      - name: Verify builds
+        run: |
+          file shm_launcher.exe
+          file xinput1_3.dll
+          sha256sum shm_launcher.exe xinput1_3.dll
+
+      - name: Create release with assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            shm_launcher.exe
+            xinput1_3.dll
