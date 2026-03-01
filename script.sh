@@ -8,25 +8,25 @@
 #  Optionally configures Steam integration and Gamescope.
 #
 #  USAGE
-#    chmod +x cluckers-setup.sh          # make executable (first time only)
-#    ./cluckers-setup.sh                 # interactive install (keyboard/mouse)
-#    ./cluckers-setup.sh --auto          # skip all prompts, use defaults
-#    ./cluckers-setup.sh --verbose       # show full Wine debug output
-#    ./cluckers-setup.sh --gamescope              # opt-in: enable Gamescope compositor (-g)
+#    chmod +x script.sh          # make executable (first time only)
+#    ./script.sh                 # interactive install (keyboard/mouse)
+#    ./script.sh --auto          # skip all prompts, use defaults
+#    ./script.sh --verbose       # show full Wine debug output
+#    ./script.sh --gamescope              # opt-in: enable Gamescope compositor (-g)
 #                                                 # Gamescope is a specialized window manager
 #                                                 # that provides better performance and
 #                                                 # features like upscaling and HDR.
-#    ./cluckers-setup.sh --gamescope-with-controller  # opt-in: Gamescope + controller support (-gc)
+#    ./script.sh --gamescope-with-controller  # opt-in: Gamescope + controller support (-gc)
 #                                                 # Combines --gamescope and --controller in one
 #                                                 # flag. Ideal for couch/TV setups where you
 #                                                 # want the Gamescope compositor AND a gamepad.
 #                                                 # Also triggered when both -g and -c are passed.
-#    ./cluckers-setup.sh --steam-deck             # opt-in: apply game patches (Deck)    (-d)
-#    ./cluckers-setup.sh --controller             # opt-in: enable controller support   (-c)
-#    ./cluckers-setup.sh --wayland-cursor-fix     # opt-in: disable winex11 to fix cursor warping under Proton on Wayland-only desktops (e.g., COSMIC)
-#    ./cluckers-setup.sh --update                 # check for game update       (-u)
-#    ./cluckers-setup.sh --uninstall              # remove everything
-#    ./cluckers-setup.sh --help                   # show this help message      (-h)
+#    ./script.sh --steam-deck             # opt-in: apply game patches (Deck)    (-d)
+#    ./script.sh --controller             # opt-in: enable controller support   (-c)
+#    ./script.sh --wayland-cursor-fix     # opt-in: disable winex11 to fix cursor warping under Proton on Wayland-only desktops (e.g., COSMIC)
+#    ./script.sh --update                 # check for game update       (-u)
+#    ./script.sh --uninstall              # remove everything
+#    ./script.sh --help                   # show this help message      (-h)
 #
 #  SHORT FLAGS
 #    -a  auto    -v  verbose    -g  gamescope    -gc  gamescope-with-controller
@@ -42,18 +42,18 @@
 #    (Wine compatibility layer, launcher, etc.) are skipped.
 #
 #    Combine with -d to also re-apply Deck patches afterward:
-#      ./cluckers-setup.sh --update --steam-deck
+#      ./script.sh --update --steam-deck
 #
 #  VERSION PINNING  (--update only)
 #    Pass GAME_VERSION=x.x.x.x to target a specific build instead of latest:
-#      GAME_VERSION=0.36.2100.0 ./cluckers-setup.sh --update
+#      GAME_VERSION=0.36.2100.0 ./script.sh --update
 #
 #    Version pinning allows users to lock the game to a specific version for
 #    stability and reproducibility (useful when a newer version breaks mods or
 #    known functionality).
 #
 #    The chosen version is written to ~/.cluckers/game/.pinned_version so
-#    subsequent plain `./cluckers-setup.sh --update` runs use the same version
+#    subsequent plain `./script.sh --update` runs use the same version
 #    automatically — no need to set GAME_VERSION each time.
 #
 #    To return to auto-update (always latest), delete the pin file:
@@ -80,7 +80,7 @@
 #    setups on desktop Linux. Steam Deck users should use --steam-deck instead.
 #
 #  PIN A SPECIFIC GAME VERSION
-#    GAME_VERSION=0.36.9999.0 ./cluckers-setup.sh
+#    GAME_VERSION=0.36.9999.0 ./script.sh
 #
 #  REPRODUCIBLE BINARIES
 #    Two small Windows helper binaries are downloaded from GitHub Releases
@@ -115,7 +115,7 @@ fi
 
 # Game version to install. Leave as "auto" to always get the latest release.
 # To pin a specific version, set it here or override on the command line:
-#   GAME_VERSION=0.36.2100.0 ./cluckers-setup.sh
+#   GAME_VERSION=0.36.2100.0 ./script.sh
 GAME_VERSION="${GAME_VERSION:-auto}"
 
 # Gamescope compositor arguments baked into the launcher at setup time.
@@ -1732,7 +1732,7 @@ parallel_download() {
 # Version pinning:
 #   Set GAME_VERSION=x.x.x.x before calling to target a specific build.
 #   The pin is written to ${GAME_DIR}/.pinned_version so subsequent plain
-#   `./cluckers-setup.sh --update` runs remember the chosen version without
+#   `./script.sh --update` runs remember the chosen version without
 #   needing GAME_VERSION set again. Clear the file to return to auto-update.
 #   Version pinning allows users to lock the game to a specific version for
 #   stability and reproducibility (useful when a newer version breaks mods or
@@ -2684,7 +2684,7 @@ main() {
     warn_msg "Steam Deck detected (board_vendor=Valve)."
     warn_msg "Re-run with --steam-deck / -d to apply Deck-specific patches:"
     warn_msg "  • Fullscreen 1280x800  • Controller input fix  • Button layout"
-    warn_msg "Example: ./cluckers-setup.sh -d"
+    warn_msg "Example: ./script.sh -d"
     warn_msg "(Continuing without Deck patches...)"
     printf "\n"
   fi
@@ -3656,8 +3656,8 @@ done
   # We use a sed pipe to strip the 2-space indentation so the shebang is valid.
   sed 's/^  //' > "${LAUNCHER_SCRIPT}" << EOF
   #!/usr/bin/env bash
-  # Cluckers Central launcher — generated by cluckers-setup.sh on $(date)
-  # Re-run cluckers-setup.sh to regenerate after updating Wine or the game.
+  # Cluckers Central launcher — generated by script.sh on $(date)
+  # Re-run script.sh to regenerate after updating Wine or the game.
 
   # Exit on error, undefined variable, or pipe failure.
   set -euo pipefail
@@ -4517,7 +4517,7 @@ AUTHEOF
   printf "    cat /tmp/cluckers_wine.log\n"
   printf "\n"
   printf "  To uninstall:\n"
-  printf "    %b./cluckers-setup.sh --uninstall%b\n" "${BOLD}" "${NC}"
+  printf "    %b./script.sh --uninstall%b\n" "${BOLD}" "${NC}"
   printf "\n"
 }
 
