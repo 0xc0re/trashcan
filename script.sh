@@ -3952,6 +3952,13 @@ _bootstrap_wine=$(printf '%s' "${_bootstrap_tmp}" | sed 's|/|\\|g; s|^|Z:|')
 _game_exe="${GAME_DIR}/${GAME_EXE_REL}"
 _game_exe_wine=$(printf '%s' "${_game_exe}" | sed 's|/|\\|g; s|^|Z:|')
 
+# Convert shm_launcher.exe path to Wine format. Proton's run() inserts
+# "start.exe /unix" for executables with Unix paths (starting with "/"),
+# which launches GUI-subsystem apps detached and returns immediately.
+# Using a Wine Z: path makes Proton call wine64 directly, so it properly
+# waits for shm_launcher.exe (and the game) to exit.
+_shm_launcher_wine=$(printf '%s' "${TOOLS_DIR}/shm_launcher.exe" | sed 's|/|\\|g; s|^|Z:|')
+
 # Shared-memory name — unique per session PID.
 _shm_name="Local\\realm_content_bootstrap_$$"
 
@@ -4026,7 +4033,7 @@ else
   _launch_cmd=("${WINE}")
 fi
 if [[ -s "${_bootstrap_tmp}" ]]; then
-  _game_args=("${TOOLS_DIR}/shm_launcher.exe" "${_bootstrap_wine}" "${_shm_name}" "${_game_exe_wine}" "${_game_args[@]}")
+  _game_args=("${_shm_launcher_wine}" "${_bootstrap_wine}" "${_shm_name}" "${_game_exe_wine}" "${_game_args[@]}")
 else
   _game_args=("${_game_exe}" "${_game_args[@]}")
 fi
