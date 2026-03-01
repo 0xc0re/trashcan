@@ -149,6 +149,10 @@ GAMESCOPE_ARGS="gamescope --force-grab-cursor -W 1920 -H 1080 -r 240 --adaptive-
 #  Constants  (readonly — cannot be changed at runtime)
 # ==============================================================================
 
+# Directory containing this script, used for resolving relative paths to
+# bundled files such as config/controller_neptune.vdf.
+readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 # Root directory for all Cluckers-related data.
 readonly CLUCKERS_ROOT="${HOME}/.cluckers"
 
@@ -273,12 +277,19 @@ readonly TOOLS_DIR="${HOME}/.local/share/cluckers-central/tools"
 # embedded binary to guarantee you are running exactly the code we compiled —
 # not a modified or corrupted version. See the REPRODUCIBLE BUILDS section
 # inside Step 6 for full instructions on compiling and verifying yourself.
-readonly SHM_LAUNCHER_SHA256="923ff334fd0b0aa6be27d57bf11809d604abb7f6342c881328423f73efcb69fa"
-readonly XINPUT_DLL_SHA256="30c2cf5d35fb7489779ac6fa714c6f874868d58ec2e5f6623d9dd5a24ae503a9"
+readonly SHM_LAUNCHER_SHA256="de1490b362ccd84dc0e7196e61abd883f22f1dfd24d2337edfee3fddb104c0b2"
+readonly XINPUT_DLL_SHA256="2f7aa905ba178b4f08f026b0092a4ce8e04af44cf6a750ae31bbcaec946611f6"
 
 # SHA-256 fingerprint of the embedded Steam Deck controller layout template.
 # Verified after extraction to confirm the embedded data was not corrupted.
 readonly CONTROLLER_LAYOUT_SHA256="779194a12bf6a353e8931b17298d930f60e83126aa1a357dc6597d81dfd61709"
+
+# GitHub Release download URLs for CI-built helper binaries.
+# These replace the base64-embedded blobs that were previously decoded inline.
+readonly RELEASE_TAG="v0.1.0"
+readonly RELEASE_BASE="https://github.com/0xc0re/trashcan/releases/download/${RELEASE_TAG}"
+readonly SHM_LAUNCHER_URL="${RELEASE_BASE}/shm_launcher.exe"
+readonly XINPUT_DLL_URL="${RELEASE_BASE}/xinput1_3.dll"
 
 export WINEPREFIX
 
@@ -1199,6 +1210,53 @@ verify_sha256() {
   The file may be corrupt or tampered. Delete it and re-run."
   fi
   ok_msg "Checksum verified."
+}
+
+# Downloads a binary from GitHub Releases, verifies its SHA-256 checksum, and
+# installs it to the specified destination. Skips the download entirely if the
+# file is already present and verified (cache-friendly for repeat runs).
+# On failure, prints a clear error with the manual download URL so the user
+# can fetch the file themselves.
+#
+# Arguments:
+#   $1  URL to download from.
+#   $2  Destination path for the installed file.
+#   $3  Expected SHA-256 hex string.
+download_binary() {
+  local -r url="$1"
+  local -r dest="$2"
+  local -r expected_sha="$3"
+  local -r name="$(basename "$dest")"
+
+  # Skip if already present and verified (DL-04)
+  if [[ -f "${dest}" ]] \
+      && [[ "$(sha256sum "${dest}" | awk '{print $1}')" == "${expected_sha}" ]]; then
+    ok_msg "${name} already installed and verified -- skipping."
+    return 0
+  fi
+
+  info_msg "Downloading ${name} from GitHub Releases..."
+  local partial="${dest}.partial"
+
+  # -f: fail on HTTP errors (DL-06), -C -: resume interrupted downloads (DL-07)
+  if ! curl ${CURL_FLAGS}f -C - -o "${partial}" "${url}"; then
+    rm -f "${partial}"
+    error_exit "Failed to download ${name}.
+
+  You can download it manually:
+    ${url}
+
+  Then place it at:
+    ${dest}
+
+  The expected SHA-256 checksum is:
+    ${expected_sha}"
+  fi
+
+  # Verify checksum before installing (DL-03)
+  verify_sha256 "${partial}" "${expected_sha}"
+  mv "${partial}" "${dest}"
+  ok_msg "${name} installed."
 }
 
 # ==============================================================================
